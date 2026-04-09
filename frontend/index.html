@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TradingView Intelligence Terminal</title>
+    <meta name="description" content="Scrape and download TradingView market data — overview, indicators, fundamentals, OHLCV, screener & market movers.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+    
+    <div class="app-container">
+        <!-- Header -->
+        <header>
+            <h1><span class="highlight">Intelligence</span> Terminal</h1>
+            <p>Scrape, visualize, and download TradingView market data in seconds.</p>
+        </header>
+
+        <!-- Top Navigation -->
+        <nav class="mode-tabs glass-panel">
+            <button class="mode-btn active" data-mode="symbol">🔍 Symbol Lookup</button>
+            <button class="mode-btn" data-mode="movers">📈 Market Movers</button>
+            <button class="mode-btn" data-mode="screener">🎯 Screener</button>
+        </nav>
+
+        <!-- ─── MODE: Symbol Lookup ─── -->
+        <section id="mode-symbol" class="mode-section active">
+            <div class="search-container glass-panel">
+                <form id="searchForm">
+                    <div class="input-group">
+                        <label for="exchange">Exchange</label>
+                        <input type="text" id="exchange" placeholder="e.g. NASDAQ" value="NASDAQ" required>
+                    </div>
+                    <div class="input-group">
+                        <label for="ticker">Ticker</label>
+                        <input type="text" id="ticker" placeholder="e.g. AAPL" value="AAPL" required>
+                    </div>
+                    <div class="input-group">
+                        <label for="timeframe">Timeframe</label>
+                        <select id="timeframe">
+                            <option value="1m">1 Min</option>
+                            <option value="5m">5 Min</option>
+                            <option value="15m">15 Min</option>
+                            <option value="1h">1 Hour</option>
+                            <option value="4h">4 Hour</option>
+                            <option value="1d" selected>Daily</option>
+                            <option value="1w">Weekly</option>
+                            <option value="1M">Monthly</option>
+                        </select>
+                    </div>
+                    <div class="input-group sm">
+                        <label for="candles">Candles</label>
+                        <input type="number" id="candles" value="100" min="5" max="5000">
+                    </div>
+                    <button type="submit" id="searchBtn">
+                        <span class="btn-text">Scrape</span>
+                        <span class="spinner" id="spinner"></span>
+                    </button>
+                </form>
+            </div>
+
+            <!-- Symbol Results -->
+            <div class="terminal-container glass-panel" id="symbolTerminal" style="display:none">
+                <div class="terminal-header">
+                    <div class="tabs" id="symbolTabs">
+                        <button class="tab-btn active" data-tab="overview">Overview</button>
+                        <button class="tab-btn" data-tab="indicators">Indicators</button>
+                        <button class="tab-btn" data-tab="fundamentals">Fundamentals</button>
+                        <button class="tab-btn" data-tab="ohlcv">Pricing (OHLCV)</button>
+                    </div>
+                    <div class="download-actions">
+                        <button class="dl-btn" onclick="triggerDownload('csv')">↓ CSV</button>
+                        <button class="dl-btn" onclick="triggerDownload('json')">↓ JSON</button>
+                    </div>
+                </div>
+                <div id="content-container">
+                    <div id="overview" class="content-pane active"></div>
+                    <div id="indicators" class="content-pane"></div>
+                    <div id="fundamentals" class="content-pane"></div>
+                    <div id="ohlcv" class="content-pane"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ─── MODE: Market Movers ─── -->
+        <section id="mode-movers" class="mode-section">
+            <div class="search-container glass-panel">
+                <form id="moversForm">
+                    <div class="input-group">
+                        <label for="moversMarket">Market</label>
+                        <select id="moversMarket">
+                            <option value="stocks-usa">🇺🇸 USA</option>
+                            <option value="stocks-india">🇮🇳 India</option>
+                            <option value="stocks-uk">🇬🇧 UK</option>
+                            <option value="stocks-canada">🇨🇦 Canada</option>
+                            <option value="stocks-australia">🇦🇺 Australia</option>
+                            <option value="crypto">₿ Crypto</option>
+                            <option value="forex">💱 Forex</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label for="moversCategory">Category</label>
+                        <select id="moversCategory">
+                            <option value="gainers">🟢 Gainers</option>
+                            <option value="losers">🔴 Losers</option>
+                            <option value="most-active">🔥 Most Active</option>
+                            <option value="penny-stocks">💰 Penny Stocks</option>
+                            <option value="pre-market-gainers">🌅 Pre-Market Gainers</option>
+                            <option value="pre-market-losers">🌅 Pre-Market Losers</option>
+                            <option value="after-hours-gainers">🌙 After-Hours Gainers</option>
+                            <option value="after-hours-losers">🌙 After-Hours Losers</option>
+                        </select>
+                    </div>
+                    <div class="input-group sm">
+                        <label for="moversLimit">Limit</label>
+                        <input type="number" id="moversLimit" value="25" min="5" max="100">
+                    </div>
+                    <button type="submit" id="moversBtn">
+                        <span class="btn-text">Fetch</span>
+                        <span class="spinner" id="moversSpinner"></span>
+                    </button>
+                </form>
+            </div>
+
+            <div class="terminal-container glass-panel" id="moversTerminal" style="display:none">
+                <div class="terminal-header">
+                    <span class="terminal-title" id="moversTitle">Market Movers</span>
+                    <div class="download-actions">
+                        <button class="dl-btn" onclick="downloadMovers('csv')">↓ CSV</button>
+                        <button class="dl-btn" onclick="downloadMovers('json')">↓ JSON</button>
+                    </div>
+                </div>
+                <div id="moversContent"></div>
+            </div>
+        </section>
+
+        <!-- ─── MODE: Screener ─── -->
+        <section id="mode-screener" class="mode-section">
+            <div class="search-container glass-panel">
+                <form id="screenerForm">
+                    <div class="input-group">
+                        <label for="screenerMarket">Market</label>
+                        <select id="screenerMarket">
+                            <option value="america">🇺🇸 USA</option>
+                            <option value="india">🇮🇳 India</option>
+                            <option value="uk">🇬🇧 UK</option>
+                            <option value="canada">🇨🇦 Canada</option>
+                            <option value="germany">🇩🇪 Germany</option>
+                            <option value="crypto">₿ Crypto</option>
+                            <option value="forex">💱 Forex</option>
+                            <option value="global">🌐 Global</option>
+                        </select>
+                    </div>
+                    <div class="input-group sm">
+                        <label for="screenerMinPrice">Min Price</label>
+                        <input type="number" id="screenerMinPrice" placeholder="—" step="any">
+                    </div>
+                    <div class="input-group sm">
+                        <label for="screenerMaxPrice">Max Price</label>
+                        <input type="number" id="screenerMaxPrice" placeholder="—" step="any">
+                    </div>
+                    <div class="input-group sm">
+                        <label for="screenerMinVol">Min Volume</label>
+                        <input type="number" id="screenerMinVol" placeholder="e.g. 1000000" step="any">
+                    </div>
+                    <div class="input-group sm">
+                        <label for="screenerMinCap">Min Mkt Cap</label>
+                        <input type="number" id="screenerMinCap" placeholder="e.g. 1e9" step="any">
+                    </div>
+                    <div class="input-group sm">
+                        <label for="screenerLimit">Limit</label>
+                        <input type="number" id="screenerLimit" value="25" min="5" max="200">
+                    </div>
+                    <button type="submit" id="screenerBtn">
+                        <span class="btn-text">Screen</span>
+                        <span class="spinner" id="screenerSpinner"></span>
+                    </button>
+                </form>
+            </div>
+
+            <div class="terminal-container glass-panel" id="screenerTerminal" style="display:none">
+                <div class="terminal-header">
+                    <span class="terminal-title" id="screenerTitle">Screener Results</span>
+                    <div class="download-actions">
+                        <button class="dl-btn" onclick="downloadScreener('csv')">↓ CSV</button>
+                        <button class="dl-btn" onclick="downloadScreener('json')">↓ JSON</button>
+                    </div>
+                </div>
+                <div id="screenerContent"></div>
+            </div>
+        </section>
+
+        <div id="toast" class="toast"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

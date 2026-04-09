@@ -7,7 +7,7 @@ import logging
 from typing import List, Optional
 
 import requests
-import pkg_resources
+# import pkg_resources
 
 from tradingview_scraper.symbols.utils import generate_user_agent, save_json_file, save_csv_file
 
@@ -174,7 +174,7 @@ class Indicators:
         Returns:
             List[str]: A list of indicators loaded from the file. Returns an empty list if the file is not found.
         """
-        path = pkg_resources.resource_filename('tradingview_scraper', 'data/indicators.txt')
+        path = os.path.join(os.path.dirname(__file__), '..', 'data', 'indicators.txt')
         return self._load_file(path)
 
     def _load_exchanges(self) -> List[str]:
@@ -183,7 +183,7 @@ class Indicators:
         Returns:
             List[str]: A list of exchanges loaded from the file. Returns an empty list if the file is not found.
         """
-        path = pkg_resources.resource_filename('tradingview_scraper', 'data/exchanges.txt')
+        path = os.path.join(os.path.dirname(__file__), '..', 'data', 'exchanges.txt')
         return self._load_file(path)
     
     def _load_timeframes(self) -> dict:
@@ -192,7 +192,7 @@ class Indicators:
         Returns:
             dict: A dictionary of timeframes loaded from the file. Returns a dict with '1d' as default.
         """
-        path = pkg_resources.resource_filename('tradingview_scraper', 'data/timeframes.json')
+        path = os.path.join(os.path.dirname(__file__), '..', 'data', 'timeframes.json')
         
         if not os.path.exists(path):
             logger.error("[ERROR] Timeframe file not found at %s.", path)

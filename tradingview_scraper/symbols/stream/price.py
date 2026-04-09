@@ -297,8 +297,11 @@ def signal_handler(sig, frame):
     exit(0)
 
 
-# Register the signal handler
-signal.signal(signal.SIGINT, signal_handler)
+# Register the signal handler (only works in main thread)
+try:
+    signal.signal(signal.SIGINT, signal_handler)
+except ValueError:
+    pass  # Not in main thread (e.g. uvicorn worker), skip signal registration
 
 
 
