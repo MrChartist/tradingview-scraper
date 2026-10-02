@@ -115,7 +115,8 @@ def resolve_name(text: str, ctx: Context) -> str:
     """'reliance' -> 'NSE:RELIANCE' when the caller allows it; qualified symbols pass through."""
     text = text.strip()
     if ":" in text:
-        return text.upper()
+        ex, tk = text.upper().split(":", 1)
+        return f"{ex}:{svc.clean_ticker(ex, tk)}"
     if not ctx.auto_resolve:
         raise ApiError(400, f"Invalid symbol format: {text.upper()}. Use EXCHANGE:TICKER, for example NSE:RELIANCE.",
                        hint=f"Don't know the code? GET /v1/symbols/resolve?q={text.lower().replace(' ', '%20')} finds the best match.")

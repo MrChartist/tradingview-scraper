@@ -116,7 +116,7 @@ def with_native_currency(exchange: str, ticker: str, response: dict) -> dict:
     data = dict(response.get("data") or {})
     region = EXCHANGE_REGION.get(exchange.upper())
     money = [k for k in data if is_money_field(k) and isinstance(data[k], (int, float))]
-    currency = "USD"
+    currency = {"NSE": "INR", "BSE": "INR"}.get(exchange.upper(), "USD")
     if region and money:
         symbol = f"{exchange.upper()}:{ticker.upper()}"
         columns = money + ["currency", "fundamental_currency_code"]
@@ -384,18 +384,44 @@ CRYPTO_ALIASES = {
 }
 
 
+# Everyday Indian names -> the code TradingView uses (indices have no company name to search for).
+INDIA_ALIASES = {
+    "nifty": "NSE:NIFTY", "nifty 50": "NSE:NIFTY", "nifty50": "NSE:NIFTY",
+    "banknifty": "NSE:BANKNIFTY", "bank nifty": "NSE:BANKNIFTY", "nifty bank": "NSE:BANKNIFTY",
+    "finnifty": "NSE:CNXFINANCE", "fin nifty": "NSE:CNXFINANCE", "nifty financial services": "NSE:CNXFINANCE",
+    "nifty it": "NSE:CNXIT", "nifty next 50": "NSE:NIFTYJR", "nifty midcap": "NSE:NIFTY_MID_SELECT",
+    "sensex": "BSE:SENSEX", "bse sensex": "BSE:SENSEX",
+    "india vix": "NSE:INDIAVIX", "vix": "NSE:INDIAVIX",
+    "sbi": "NSE:SBIN", "zomato": "NSE:ETERNAL", "bajaj auto": "NSE:BAJAJ_AUTO", "m&m": "NSE:M_M", "mahindra": "NSE:M_M",
+}
+
+
+def clean_ticker(exchange: str, ticker: str) -> str:
+    """NSE writes BAJAJ-AUTO; TradingView writes BAJAJ_AUTO."""
+    if exchange.upper() in ("NSE", "BSE"):
+        return ticker.upper().replace("-", "_")
+    return ticker.upper()
+
+
 def resolve_symbol(query: str, prefer_country: str = "") -> dict:
     """Turn what a person typed ('reliance', 'apple', 'btc') into the best EXCHANGE:TICKER.
 
     prefer_country (for example "IN") breaks ties toward listings from that country, so
     "tcs" means India's TCS rather than an unrelated company with the same ticker."""
     q = query.strip()
+    alias = INDIA_ALIASES.get(" ".join(q.lower().split()))
+    if alias and (not prefer_country or prefer_country.upper() == "IN"):
+        ex, tk = alias.split(":")
+        return {"query": query, "best": {"exchange": ex, "symbol": tk, "full_symbol": alias,
+                                         "description": q.title(), "type": "index" if tk in ("NIFTY", "BANKNIFTY", "SENSEX", "INDIAVIX", "CNXIT", "CNXFINANCE", "NIFTYJR") else "stock"},
+                "alternatives": []}
     if q.lower() in CRYPTO_ALIASES:
         pair = CRYPTO_ALIASES[q.lower()]
         return {"query": query, "best": {"exchange": "BINANCE", "symbol": pair, "full_symbol": f"BINANCE:{pair}",
                                          "description": f"{q.upper()} / Tether (crypto)", "type": "spot"}, "alternatives": []}
     if ":" in q and SYMBOL_PATTERN.match(q.upper()):
         exchange, ticker = q.upper().split(":", 1)
+        ticker = clean_ticker(exchange, ticker)
         return {"query": query, "best": {"exchange": exchange, "symbol": ticker, "full_symbol": f"{exchange}:{ticker}"},
                 "alternatives": []}
     results = search_symbols_raw(q)
