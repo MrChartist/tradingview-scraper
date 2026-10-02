@@ -52,27 +52,55 @@ function setLoading(btnId, on) {
 function skeleton(n = 3) { return '<div class="skeleton"></div>'.repeat(n); }
 function errorBox(msg) { return `<div class="error-box">${esc(msg)}</div>`; }
 
-// ── Number formatting ──────────────────────────────────────────────
-function compact(n) {
-    const a = Math.abs(n);
-    if (a >= 1e12) return (n / 1e12).toFixed(2) + 'T';
-    if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-    if (a >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-    if (a >= 1e5) return (n / 1e3).toFixed(1) + 'K';
-    return null;
-}
-function price(n) {
+// ── Number formatting (currency aware; rupees use Lakh / Crore) ─────
+const SYMBOLS = { INR: '₹', USD: '$', GBP: '£', EUR: '€', CAD: 'C$', AUD: 'A$', JPY: '¥', CHF: 'CHF ', AED: 'AED ' };
+const sym = ccy => (ccy && SYMBOLS[ccy]) || '';
+const locale = ccy => (ccy === 'INR' ? 'en-IN' : 'en-US');
+
+function price(n, ccy, withSymbol = false) {
     if (!isNum(n)) return '—';
     const a = Math.abs(n);
-    const d = a >= 1000 ? 2 : a >= 1 ? 2 : a >= 0.01 ? 4 : 8;
-    return n.toLocaleString('en-US', { minimumFractionDigits: Math.min(d, 2), maximumFractionDigits: d });
+    const d = a >= 1 ? 2 : a >= 0.01 ? 4 : 8;
+    const body = Math.abs(n).toLocaleString(locale(ccy), { minimumFractionDigits: Math.min(d, 2), maximumFractionDigits: d });
+    return `${n < 0 ? '-' : ''}${withSymbol ? sym(ccy) : ''}${body}`;
 }
 function pct(n) { return isNum(n) ? `${n > 0 ? '+' : ''}${n.toFixed(2)}%` : '—'; }
+
+/** Large amounts. INR: ₹15.78 L Cr / ₹7,622 Cr / ₹4.50 L. Others: $4.84T / $1.20B / $350.00M. */
+function money(n, ccy) {
+    if (!isNum(n)) return '—';
+    const a = Math.abs(n), neg = n < 0 ? '-' : '', s = sym(ccy);
+    if (ccy === 'INR') {
+        if (a >= 1e12) return `${neg}${s}${(a / 1e12).toFixed(2)} L Cr`;
+        if (a >= 1e7) return `${neg}${s}${(a / 1e7).toLocaleString('en-IN', { maximumFractionDigits: a >= 1e9 ? 0 : 2 })} Cr`;
+        if (a >= 1e5) return `${neg}${s}${(a / 1e5).toFixed(2)} L`;
+        return `${neg}${s}${a.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+    }
+    const u = a >= 1e12 ? [1e12, 'T'] : a >= 1e9 ? [1e9, 'B'] : a >= 1e6 ? [1e6, 'M'] : null;
+    return u ? `${neg}${s}${(a / u[0]).toFixed(2)}${u[1]}` : `${neg}${s}${a.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+}
+
+/** Share volume. India reads Lakh / Crore; elsewhere K / M / B. */
+function volume(n, ccy) {
+    if (!isNum(n)) return '—';
+    const a = Math.abs(n);
+    if (ccy === 'INR') {
+        if (a >= 1e7) return `${(n / 1e7).toFixed(2)} Cr`;
+        if (a >= 1e5) return `${(n / 1e5).toFixed(2)} L`;
+        return n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+    }
+    if (a >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (a >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (a >= 1e4) return `${(n / 1e3).toFixed(1)}K`;
+    return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
+}
 function plain(n) {
     if (!isNum(n)) return '—';
-    const c = compact(n);
-    if (c) return c;
-    return Number.isInteger(n) ? n.toLocaleString('en-US') : n.toLocaleString('en-US', { maximumFractionDigits: 4 });
+    const a = Math.abs(n);
+    if (a >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (a >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (Number.isInteger(n)) return n.toLocaleString('en-US');
+    return n.toLocaleString('en-US', { maximumFractionDigits: a >= 1 ? 2 : 4 });
 }
 function badge(n) {
     if (!isNum(n)) return '—';
@@ -81,9 +109,9 @@ function badge(n) {
 
 const LABELS = {
     close: 'Price', change: 'Change %', change_abs: 'Change', change_from_open: 'Change from open',
-    market_cap_basic: 'Market cap (USD)', market_cap_calc: 'Market cap, calc.', market_cap_diluted_calc: 'Market cap, diluted',
+    market_cap_basic: 'Market cap', market_cap_calc: 'Market cap (calc.)', market_cap_diluted_calc: 'Market cap (diluted)',
     price_earnings_ttm: 'P/E (TTM)', earnings_per_share_basic_ttm: 'EPS (TTM)', earnings_per_share_diluted_ttm: 'EPS diluted (TTM)',
-    price_52_week_high: '52-week high', price_52_week_low: '52-week low', 'Value.Traded': 'Value traded',
+    price_52_week_high: '52-week high', price_52_week_low: '52-week low', 'Value.Traded': 'Value traded (day)',
     'Recommend.All': 'Rating score', beta_1_year: 'Beta (1Y)', dividends_yield: 'Dividend yield',
     price_book_fq: 'Price / book', price_sales_ttm: 'Price / sales', debt_to_equity: 'Debt / equity',
     'Perf.W': 'Week', 'Perf.1M': '1 month', 'Perf.3M': '3 months', 'Perf.6M': '6 months', 'Perf.Y': '1 year', 'Perf.YTD': 'Year to date',
@@ -93,8 +121,14 @@ const LABELS = {
     current_ratio_fq: 'Current ratio', quick_ratio_fq: 'Quick ratio',
 };
 function label(k) {
-    return LABELS[k] || k.replace(/\[(\d+)\]/g, ' (prev $1)').replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (LABELS[k]) return LABELS[k];
+    const t = k.replace(/\[(\d+)\]/g, ' (prev $1)').replace(/[._]/g, ' ').replace(/\s+/g, ' ').trim();
+    return t.charAt(0).toUpperCase() + t.slice(1);
 }
+const MONEY_RE = /market_cap|earnings_per_share|^eps|per_share|revenue|income|profit|^cash_|debt|assets|ebitda|enterprise_value|free_cash_flow|^Value\.Traded$|ebit$/i;
+const NOT_MONEY_RE = /margin|ratio|_to_|return_on|percent|yield|payout|growth|^debt_to|^current_|^quick_/i;
+const isMoneyKey = k => MONEY_RE.test(k) && !NOT_MONEY_RE.test(k);
+const isPerShareKey = k => /per_share|earnings_per_share|^eps|basic_eps/i.test(k);
 const isPctKey = k => /^(change|change_from_open)$|^Perf\.|^Volatility\.|percent|margin|yield|^return_on|payout/i.test(k);
 const isPriceKey = k => /^(close|open|high|low|price_52_week_(high|low)|change_abs)$/.test(k);
 
@@ -105,7 +139,7 @@ $('themeBtn').addEventListener('click', () => {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
     store('theme', next);
-    if (symState.ohlcv) drawChart();
+    if (symState.ohlcv) drawChart(false);
 });
 $('helpBtn').addEventListener('click', () => $('helpDialog').showModal());
 
@@ -144,16 +178,14 @@ const tables = {};   // container id -> { rows, cols, sortKey, sortDir, filter }
 
 const MOVER_COLS = [
     { key: 'symbol', label: 'Symbol', left: true, render: r => symbolCell(r) },
-    { key: 'close', label: 'Price', fmt: price },
+    { key: 'close', label: 'Price', fmtRow: r => price(r.close, r.currency) },
     { key: 'change', label: 'Change %', html: badge },
-    { key: 'change_abs', label: 'Change', fmt: price, tone: true },
-    { key: 'volume', label: 'Volume', fmt: plain },
-    { key: 'market_cap_basic', label: 'Mkt cap (USD)', fmt: plain },
+    { key: 'change_abs', label: 'Change', fmtRow: r => price(r.change_abs, r.currency), tone: true },
+    { key: 'volume', label: 'Volume', fmtRow: r => volume(r.volume, r.currency) },
+    { key: 'market_cap_basic', label: 'Market cap', fmtRow: r => money(r.market_cap_basic, r.currency) },
     { key: 'price_earnings_ttm', label: 'P/E', fmt: n => isNum(n) ? n.toFixed(1) : '—' },
 ];
-const SCREENER_COLS = MOVER_COLS.concat([
-    { key: 'Recommend.All', label: 'Rating', fmt: n => isNum(n) ? n.toFixed(2) : '—' },
-]);
+const SCREENER_COLS = MOVER_COLS;
 
 function symbolCell(r) {
     const sym = esc(r.symbol);
@@ -169,7 +201,7 @@ function renderTable(id, rows, cols, { onRowClick } = {}) {
         return;
     }
     // Add any extra columns the first row carries (keeps CSV and table in step).
-    tables[id] = { rows, cols, sortKey: null, sortDir: 'desc', filter: '', onRowClick };
+    tables[id] = { rows, cols, sortKey: null, sortDir: 'desc', filter: '', onRowClick, fresh: true };
     paintTable(id);
 }
 
@@ -198,12 +230,14 @@ function paintTable(id) {
     });
     h += '</tr></thead><tbody>';
     rows.forEach((r, i) => {
-        h += `<tr class="${t.onRowClick ? 'clickable' : ''}" data-i="${t.rows.indexOf(r)}">`;
+        const enter = t.fresh && i < 24 ? ` enter" style="--i:${i}` : '';
+        h += `<tr class="${t.onRowClick ? 'clickable' : ''}${enter}" data-i="${t.rows.indexOf(r)}">`;
         t.cols.forEach(col => {
             const v = r[col.key];
             let cell;
             if (col.render) cell = col.render(r);
             else if (col.html) cell = col.html(v);
+            else if (col.fmtRow) cell = esc(col.fmtRow(r));
             else if (col.fmt) cell = esc(col.fmt(v));
             else cell = esc(v ?? '—');
             const tone = col.tone && isNum(v) ? (v > 0 ? ' pos' : v < 0 ? ' neg' : '') : '';
@@ -213,6 +247,7 @@ function paintTable(id) {
     });
     h += `</tbody></table></div><div class="row-count">${rows.length}${rows.length !== t.rows.length ? ` of ${t.rows.length}` : ''} rows</div>`;
     c.innerHTML = h;
+    t.fresh = false;
 
     c.querySelectorAll('th').forEach(th => {
         const act = () => {
@@ -388,13 +423,16 @@ $('searchForm').addEventListener('submit', async e => {
     }
 });
 
+const priceCcy = () => symData.overview?.price_currency || symData.overview?.currency || 'USD';
+const fundCcy = () => symData.overview?.currency || symData.fundamentals?.currency || 'USD';
+
 function renderSymbolHead() {
     const d = symData.overview || {};
     const tvUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symState.exchange + ':' + symState.ticker)}`;
     $('symbolHead').innerHTML = `
         <div><div class="sh-name">${esc(d.description || symState.ticker)}</div><div class="sh-sym">${esc(symState.exchange)}:${esc(symState.ticker)}${d.type ? ' · ' + esc(d.type) : ''}</div></div>
-        <div class="sh-price">${isNum(d.close) ? price(d.close) : '—'}</div>
-        <div>${badge(d.change)} <span class="sh-sub">${isNum(d.change_abs) ? (d.change_abs > 0 ? '+' : '') + price(d.change_abs) : ''}</span></div>
+        <div class="sh-price">${isNum(d.close) ? price(d.close, priceCcy(), true) : '—'}</div>
+        <div>${badge(d.change)} <span class="sh-sub">${isNum(d.change_abs) ? (d.change_abs > 0 ? '+' : '') + price(d.change_abs, priceCcy()) : ''}</span></div>
         <a class="sh-link" href="${tvUrl}" target="_blank" rel="noopener noreferrer">Open on TradingView &#8599;</a>`;
 }
 
@@ -422,7 +460,7 @@ function renderOverview() {
         const cards = keys.filter(k => d[k] != null).map(k => { used.add(k); return card(k, d[k]); }).join('');
         if (cards) h += `<div class="group"><div class="group-title">${title}</div><div class="data-grid">${cards}</div></div>`;
     });
-    const rest = Object.keys(d).filter(k => !used.has(k) && !INDICATOR_KEYS.has(k) && d[k] != null && typeof d[k] !== 'object');
+    const rest = Object.keys(d).filter(k => !used.has(k) && k !== 'currency' && k !== 'price_currency' && !INDICATOR_KEYS.has(k) && d[k] != null && typeof d[k] !== 'object');
     if (rest.length) h += `<div class="group"><div class="group-title">Other</div><div class="data-grid">${rest.map(k => card(k, d[k])).join('')}</div></div>`;
     c.innerHTML = h;
     applyGridFilter();
@@ -430,14 +468,17 @@ function renderOverview() {
 
 function rangeBar(title, lo, hi, cur) {
     const p = Math.min(100, Math.max(0, ((cur - lo) / (hi - lo)) * 100));
-    return `<div class="range"><div class="range-title">${esc(title)}</div><div class="range-row"><span>${price(lo)}</span><span>${price(hi)}</span></div><div class="range-track"><div class="range-dot" style="left:${p}%"></div></div></div>`;
+    return `<div class="range"><div class="range-title">${esc(title)}</div><div class="range-row"><span>${price(lo, priceCcy(), true)}</span><span>${price(hi, priceCcy(), true)}</span></div><div class="range-track"><div class="range-dot" style="left:${p}%"></div></div></div>`;
 }
 
 function card(k, v) {
     let text, cls = '';
     if (typeof v === 'number') {
         if (isPctKey(k)) { text = pct(v); cls = v > 0 ? 'pos' : v < 0 ? 'neg' : ''; if (!/^(change|Perf|change_from_open)/.test(k)) { text = v.toFixed(2) + '%'; cls = ''; } }
-        else if (isPriceKey(k)) text = price(v);
+        else if (k === 'volume') text = volume(v, priceCcy());
+        else if (isPriceKey(k)) text = price(v, priceCcy(), true);
+        else if (isPerShareKey(k)) text = price(v, fundCcy(), true);
+        else if (isMoneyKey(k)) text = money(v, k === 'Value.Traded' ? priceCcy() : fundCcy());
         else text = plain(v);
     } else { text = String(v); cls = 'text'; }
     return `<div class="data-card" data-search="${esc((label(k) + ' ' + k).toLowerCase())}" title="Click to copy"><div class="data-label">${esc(label(k))}</div><div class="data-value ${cls}" data-raw="${esc(v)}">${esc(text)}</div></div>`;
@@ -446,7 +487,7 @@ function card(k, v) {
 function renderGrid(id, data, emptyMsg) {
     const c = $(id);
     if (!data) { c.innerHTML = errorBox(emptyMsg); return; }
-    const entries = Object.entries(data).filter(([, v]) => v != null && typeof v !== 'object');
+    const entries = Object.entries(data).filter(([k, v]) => v != null && typeof v !== 'object' && k !== 'currency' && k !== 'price_currency');
     if (!entries.length) { c.innerHTML = `<div class="no-data">${esc(emptyMsg)}</div>`; return; }
     c.innerHTML = `<div class="data-grid">${entries.map(([k, v]) => card(k, v)).join('')}</div>`;
     applyGridFilter();
@@ -524,76 +565,131 @@ function renderOHLCV() {
     const rows = [...data].reverse();
     const cols = [
         { key: 'timestamp', label: 'Time', left: true, fmt: n => isNum(n) ? fmtTs(n) : '—' },
-        { key: 'open', label: 'Open', fmt: price }, { key: 'high', label: 'High', fmt: price },
-        { key: 'low', label: 'Low', fmt: price }, { key: 'close', label: 'Close', fmt: price },
-        { key: 'volume', label: 'Volume', fmt: plain },
+        { key: 'open', label: 'Open', fmt: n => price(n, priceCcy()) }, { key: 'high', label: 'High', fmt: n => price(n, priceCcy()) },
+        { key: 'low', label: 'Low', fmt: n => price(n, priceCcy()) }, { key: 'close', label: 'Close', fmt: n => price(n, priceCcy()) },
+        { key: 'volume', label: 'Volume', fmt: n => volume(n, priceCcy()) },
     ];
     c.innerHTML = `<div class="info-banner">${data.length} candles · ${esc(symState.exchange)}:${esc(symState.ticker)} · ${esc(symState.timeframe)}. Newest first in the table.</div>
-        <div class="chart-wrap"><canvas id="chart" aria-label="Candlestick chart"></canvas><div class="chart-tip" id="chartTip"></div></div>
+        <div class="chart-wrap"><canvas id="chart" aria-label="Candlestick chart"></canvas><canvas id="chartOverlay" aria-hidden="true"></canvas><div class="chart-tip" id="chartTip"></div></div>
         <div id="ohlcvTable"></div>`;
     renderTable('ohlcvTable', rows, cols);
-    drawChart();
+    drawChart(true);
 }
 
 function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
-function drawChart() {
-    const cv = $('chart'); const data = symState.ohlcv;
-    if (!cv || !data || !data.length) return;
+const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let chartAnim = 0;
+let chartGeo = null;   // geometry shared by the base chart and the crosshair overlay
+
+function setupCanvas(cv) {
     const dpr = window.devicePixelRatio || 1;
     const W = cv.clientWidth, H = cv.clientHeight;
     cv.width = W * dpr; cv.height = H * dpr;
     const g = cv.getContext('2d');
-    g.scale(dpr, dpr);
-    g.clearRect(0, 0, W, H);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { g, W, H };
+}
 
-    const pos = cssVar('--pos'), neg = cssVar('--neg'), dim = cssVar('--text-dim'), grid = cssVar('--border');
-    const padL = 8, padR = 62, padT = 14, padB = 22;
+/** Draws the chart. `progress` (0..1) reveals candles left to right for the entry animation. */
+function drawChart(animate = false) {
+    const cv = $('chart'); const data = symState.ohlcv;
+    if (!cv || !data || !data.length) return;
+    cancelAnimationFrame(chartAnim);
+    const t0 = performance.now(), dur = animate && !reducedMotion() ? 650 : 0;
+    const frame = now => {
+        const p = dur ? Math.min(1, (now - t0) / dur) : 1;
+        paintChart(cv, data, 1 - Math.pow(1 - p, 3));
+        if (p < 1) chartAnim = requestAnimationFrame(frame);
+    };
+    chartAnim = requestAnimationFrame(frame);
+}
+
+function paintChart(cv, data, progress) {
+    const { g, W, H } = setupCanvas(cv);
+    g.clearRect(0, 0, W, H);
+    const pos = cssVar('--pos'), neg = cssVar('--neg'), dim = cssVar('--text-dim'), grid = cssVar('--border'), cta = cssVar('--cta');
+    const ccy = priceCcy();
+    const padL = 10, padR = 70, padT = 18, padB = 24;
     const volH = (H - padT - padB) * 0.18;
-    const plotH = H - padT - padB - volH - 6;
+    const plotH = H - padT - padB - volH - 8;
     const plotW = W - padL - padR;
     const hi = Math.max(...data.map(d => d.high)), lo = Math.min(...data.map(d => d.low));
     const span = (hi - lo) || 1;
     const vmax = Math.max(...data.map(d => d.volume || 0)) || 1;
     const step = plotW / data.length;
-    const bw = Math.max(1, Math.min(14, step * 0.7));
+    const bw = Math.max(1, Math.min(14, step * 0.68));
     const y = p => padT + (hi - p) / span * plotH;
     const x = i => padL + step * i + step / 2;
+    chartGeo = { padL, padR, padT, padB, W, H, step, hi, lo, span, plotH, y, x };
 
-    g.font = '11px "JetBrains Mono", monospace';
+    g.font = '600 11px "Roboto Condensed", "Inter", sans-serif';
     g.textBaseline = 'middle';
     for (let i = 0; i <= 4; i++) {
-        const p = lo + span * i / 4, yy = y(p);
-        g.strokeStyle = grid; g.globalAlpha = .6; g.lineWidth = 1;
+        const v = lo + span * i / 4, yy = y(v);
+        g.strokeStyle = grid; g.globalAlpha = .55; g.lineWidth = 1; g.setLineDash([2, 4]);
         g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
-        g.globalAlpha = 1; g.fillStyle = dim; g.textAlign = 'left';
-        g.fillText(price(p), W - padR + 6, yy);
+        g.setLineDash([]); g.globalAlpha = 1; g.fillStyle = dim; g.textAlign = 'left';
+        g.fillText(price(v, ccy), W - padR + 8, yy);
     }
-    data.forEach((d, i) => {
+
+    const shown = Math.max(1, Math.ceil(data.length * progress));
+    for (let i = 0; i < shown; i++) {
+        const d = data[i];
         const up = d.close >= d.open, col = up ? pos : neg, xx = x(i);
         g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 1;
         g.beginPath(); g.moveTo(xx, y(d.high)); g.lineTo(xx, y(d.low)); g.stroke();
         const top = y(Math.max(d.open, d.close)), h = Math.max(1, Math.abs(y(d.open) - y(d.close)));
         g.fillRect(xx - bw / 2, top, bw, h);
         const vh = (d.volume || 0) / vmax * volH;
-        g.globalAlpha = .35; g.fillRect(xx - bw / 2, H - padB - vh, bw, vh); g.globalAlpha = 1;
-    });
-    g.fillStyle = dim; g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+        g.globalAlpha = .32; g.fillRect(xx - bw / 2, H - padB - vh, bw, vh); g.globalAlpha = 1;
+    }
+
+    // Last price line + label
+    if (progress >= 1) {
+        const last = data[data.length - 1], ly = y(last.close), up = last.close >= last.open;
+        g.strokeStyle = cta; g.lineWidth = 1; g.setLineDash([5, 4]); g.globalAlpha = .9;
+        g.beginPath(); g.moveTo(padL, ly); g.lineTo(W - padR, ly); g.stroke();
+        g.setLineDash([]); g.globalAlpha = 1;
+        g.fillStyle = cta; g.fillRect(W - padR + 2, ly - 9, padR - 4, 18);
+        g.fillStyle = '#1c2833'; g.textAlign = 'center';
+        g.fillText(price(last.close, ccy), W - padR / 2 + 1, ly + 0.5);
+        void up;
+    }
+
+    g.fillStyle = dim; g.textBaseline = 'alphabetic';
     [0, Math.floor(data.length / 2), data.length - 1].forEach((i, n) => {
         g.textAlign = n === 0 ? 'left' : n === 2 ? 'right' : 'center';
-        g.fillText(fmtTs(data[i].timestamp), n === 0 ? padL : n === 2 ? W - padR : x(i), H - 6);
+        g.fillText(fmtTs(data[i].timestamp), n === 0 ? padL : n === 2 ? W - padR : x(i), H - 7);
     });
 
-    cv.onmousemove = ev => {
-        const r = cv.getBoundingClientRect();
-        const i = Math.min(data.length - 1, Math.max(0, Math.floor((ev.clientX - r.left - padL) / step)));
-        const d = data[i];
-        $('chartTip').textContent = `${fmtTs(d.timestamp)}  O ${price(d.open)}  H ${price(d.high)}  L ${price(d.low)}  C ${price(d.close)}  V ${plain(d.volume)}`;
-    };
-    cv.onmouseleave = () => { $('chartTip').textContent = ''; };
+    const ov = $('chartOverlay');
+    if (ov) setupCanvas(ov);   // clears the crosshair after a redraw
+    cv.onmousemove = ev => crosshair(ev, data);
+    cv.onmouseleave = () => { $('chartTip').textContent = ''; if (ov) setupCanvas(ov); };
+    cv.style.pointerEvents = 'auto';
+    $('chartOverlay').style.pointerEvents = 'none';
+}
+
+function crosshair(ev, data) {
+    if (!chartGeo) return;
+    const cv = $('chart'), r = cv.getBoundingClientRect();
+    const { padL, padR, padT, W, H, padB, step, x, lo, span, plotH } = chartGeo;
+    const i = Math.min(data.length - 1, Math.max(0, Math.floor((ev.clientX - r.left - padL) / step)));
+    const d = data[i], ccy = priceCcy();
+    $('chartTip').textContent = `${fmtTs(d.timestamp)}   O ${price(d.open, ccy)}   H ${price(d.high, ccy)}   L ${price(d.low, ccy)}   C ${price(d.close, ccy)}   Vol ${volume(d.volume, ccy)}`;
+    const { g } = setupCanvas($('chartOverlay'));
+    const yy = Math.min(padT + plotH, Math.max(padT, ev.clientY - r.top));
+    g.strokeStyle = cssVar('--accent'); g.globalAlpha = .7; g.lineWidth = 1; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(x(i), padT); g.lineTo(x(i), H - padB); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+    g.setLineDash([]); g.globalAlpha = 1;
+    const val = lo + span * (1 - (yy - padT) / plotH);
+    g.fillStyle = cssVar('--accent'); g.fillRect(W - padR + 2, yy - 9, padR - 4, 18);
+    g.fillStyle = '#06231d'; g.font = '700 11px "Roboto Condensed", "Inter", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(price(val, ccy), W - padR / 2 + 1, yy + 0.5);
 }
 let resizeTimer;
-window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawChart, 120); });
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => drawChart(false), 120); });
 
 // ═══════════════════════════════════════════════════════════════════
 //  MARKET MOVERS
@@ -630,7 +726,8 @@ async function fetchMovers(quiet = false) {
     try {
         const res = await api(`/api/movers?${qs(moversState)}`);
         $('moversResults').hidden = false;
-        $('moversTitle').textContent = `${moversState.category.replace(/-/g, ' ')} · ${$('moversMarket').selectedOptions[0].textContent}`;
+        const cat = moversState.category.replace(/-/g, ' ');
+        $('moversTitle').textContent = `${cat.charAt(0).toUpperCase() + cat.slice(1)} · ${$('moversMarket').selectedOptions[0].textContent}`;
         $('moversFilter').value = '';
         renderTable('moversContent', res.data, MOVER_COLS, { onRowClick: openSymbol });
         setDownloads('movers', '/api/download/movers', moversState);
@@ -651,19 +748,36 @@ const SCREENER_FIELDS = {
     screenerMinPrice: 'min_price', screenerMaxPrice: 'max_price', screenerMinChange: 'min_change',
     screenerMaxChange: 'max_change', screenerMinVol: 'min_volume', screenerMinCap: 'min_market_cap',
 };
+// Market cap is typed in the unit people use for that market: crore for India, millions elsewhere.
+const CAP_UNITS = {
+    india: { label: 'Min cap (₹ Cr)', mult: 1e7, ph: 'e.g. 5000', large: 50000 },
+    america: { label: 'Min cap ($ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    uk: { label: 'Min cap (£ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    canada: { label: 'Min cap (C$ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    germany: { label: 'Min cap (€ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+};
+const capUnit = () => CAP_UNITS[val('screenerMarket')] || { label: 'Min cap (raw)', mult: 1, ph: 'e.g. 1000000000', large: 1e10 };
+function syncCapUnit() {
+    const u = capUnit();
+    $('screenerCapLabel').textContent = u.label;
+    $('screenerMinCap').placeholder = u.ph;
+}
+$('screenerMarket').addEventListener('change', syncCapUnit);
+syncCapUnit();
+
 const PRESETS = [
-    { name: 'Active gainers', set: { screenerMinChange: 2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'desc' } },
-    { name: 'Active losers', set: { screenerMaxChange: -2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'asc' } },
-    { name: 'Volume leaders', set: { screenerSort: 'volume', screenerOrder: 'desc' } },
-    { name: 'Large caps', set: { screenerMinCap: 10000000000, screenerSort: 'market_cap_basic', screenerOrder: 'desc' } },
-    { name: 'Under 100, liquid', set: { screenerMaxPrice: 100, screenerMinVol: 1000000, screenerSort: 'volume', screenerOrder: 'desc' } },
+    { name: 'Active gainers', set: () => ({ screenerMinChange: 2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'desc' }) },
+    { name: 'Active losers', set: () => ({ screenerMaxChange: -2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'asc' }) },
+    { name: 'Volume leaders', set: () => ({ screenerSort: 'volume', screenerOrder: 'desc' }) },
+    { name: 'Large caps', set: () => ({ screenerMinCap: capUnit().large, screenerSort: 'market_cap_basic', screenerOrder: 'desc' }) },
+    { name: 'Under 100, liquid', set: () => ({ screenerMaxPrice: 100, screenerMinVol: 1000000, screenerSort: 'volume', screenerOrder: 'desc' }) },
 ];
 $('screenerPresets').innerHTML = '<span class="chips-label">Presets:</span>' +
     PRESETS.map((p, i) => `<button type="button" class="chip" data-i="${i}">${p.name}</button>`).join('');
 $('screenerPresets').addEventListener('click', e => {
     const b = e.target.closest('.chip'); if (!b) return;
     resetScreener(false);
-    Object.entries(PRESETS[+b.dataset.i].set).forEach(([id, v]) => { $(id).value = v; });
+    Object.entries(PRESETS[+b.dataset.i].set()).forEach(([id, v]) => { $(id).value = v; });
     $('screenerForm').requestSubmit();
 });
 function resetScreener(clearResults = true) {
@@ -679,7 +793,11 @@ $('screenerForm').addEventListener('submit', async e => {
         market: val('screenerMarket'), sort_by: val('screenerSort'), sort_order: val('screenerOrder'),
         limit: Math.min(200, Math.max(1, parseInt(val('screenerLimit'), 10) || 25)),
     };
-    Object.entries(SCREENER_FIELDS).forEach(([id, key]) => { if (val(id) !== '') params[key] = val(id); });
+    params.main_only = $('screenerMain').checked;
+    Object.entries(SCREENER_FIELDS).forEach(([id, key]) => {
+        if (val(id) === '') return;
+        params[key] = id === 'screenerMinCap' ? Number(val(id)) * capUnit().mult : val(id);
+    });
     setLoading('screenerBtn', true);
     try {
         const res = await api(`/api/screener?${qs(params)}`);

@@ -62,7 +62,7 @@ def test_not_found_maps_to_404(client):
 
 def test_screener_builds_filters(client):
     with mock.patch.object(main.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
-        client.get("/api/screener?market=india&min_price=5&max_change=-2&min_market_cap=1e9")
+        client.get("/api/screener?market=india&min_price=5&max_change=-2&min_market_cap=1e9&main_only=false")
     filters = m.call_args.kwargs["filters"]
     assert {"left": "close", "operation": "egreater", "right": 5.0} in filters
     assert {"left": "change", "operation": "eless", "right": -2.0} in filters
@@ -71,7 +71,7 @@ def test_screener_builds_filters(client):
 
 def test_download_screener_respects_filters(client):
     with mock.patch.object(main.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
-        r = client.get("/api/download/screener?market=india&min_price=5&fmt=csv")
+        r = client.get("/api/download/screener?market=india&min_price=5&main_only=false&fmt=csv")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     assert m.call_args.kwargs["filters"] == [{"left": "close", "operation": "egreater", "right": 5.0}]
 
@@ -124,3 +124,33 @@ def test_premarket_uses_premarket_columns():
 def test_extended_hours_rejected_outside_usa():
     with pytest.raises(ValueError):
         MarketMovers()._validate_category("pre-market-gainers", "stocks-india")
+
+
+def test_screener_defaults_to_main_exchange(client):
+    with mock.patch.object(main.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
+        client.get("/api/screener?market=india")
+    assert {"left": "exchange", "operation": "in_range", "right": ["NSE"]} in m.call_args.kwargs["filters"]
+
+
+def test_native_currency_replaces_usd_figures():
+    resp = {"status": "success", "data": {"market_cap_basic": 163.8e9, "debt_to_equity": 0.4, "close": 1167.7}}
+    native = {"market_cap_basic": 15.78e12, "currency": "INR", "fundamental_currency_code": "INR"}
+    with mock.patch.object(main.requests, "post") as post:
+        post.return_value.json.return_value = {"data": [{"d": [native["market_cap_basic"], "INR", "INR"]}]}
+        post.return_value.raise_for_status.return_value = None
+        out = main.with_native_currency("NSE", "RELIANCE", resp)["data"]
+    assert out["market_cap_basic"] == 15.78e12 and out["currency"] == "INR"
+    assert out["debt_to_equity"] == 0.4          # ratios untouched
+    assert resp["data"]["market_cap_basic"] == 163.8e9   # input not mutated
+
+
+def test_unknown_exchange_keeps_usd():
+    out = main.with_native_currency("BINANCE", "BTCUSDT", {"status": "success", "data": {"market_cap_basic": 5}})["data"]
+    assert out["currency"] == "USD" and out["market_cap_basic"] == 5
+
+
+def test_money_field_rule():
+    assert main.is_money_field("market_cap_basic") and main.is_money_field("total_revenue")
+    assert main.is_money_field("earnings_per_share_basic_ttm")
+    assert not main.is_money_field("gross_margin") and not main.is_money_field("return_on_assets_fq")
+    assert not main.is_money_field("debt_to_equity") and not main.is_money_field("price_earnings_ttm")

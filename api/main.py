@@ -3,6 +3,7 @@ import csv
 import json
 import time
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
@@ -78,6 +79,13 @@ class _InMemoryStreamer(Streamer):
         return None
 
 
+STOCK_SCREENER_MARKETS = {"america", "india", "uk", "canada", "germany", "australia", "global"}
+STOCK_SCREENER_COLUMNS = [
+    "name", "description", "close", "change", "change_abs", "volume", "Recommend.All",
+    "market_cap_basic", "price_earnings_ttm", "earnings_per_share_basic_ttm", "currency",
+]
+
+
 # ─── Initialize Scrapers ───────────────────────────────────────────
 overview_scraper = Overview()
 indicators_scraper = Indicators()
@@ -92,10 +100,67 @@ def health_check():
     return {"status": "ok", "message": "TradingView Intelligence Terminal is running"}
 
 
+# ─── Native-currency values ────────────────────────────────────────
+# The symbol endpoints report every monetary figure in USD. The regional
+# scanners report them in the listing currency (rupees for NSE/BSE), so for
+# monetary fields we replace the USD figure with the native one.
+EXCHANGE_REGION = {
+    "NSE": "india", "BSE": "india",
+    "NASDAQ": "america", "NYSE": "america", "AMEX": "america", "NYSE ARCA": "america", "ARCA": "america",
+    "LSE": "uk", "TSX": "canada", "TSXV": "canada", "ASX": "australia",
+    "XETR": "germany", "FWB": "germany", "SWB": "germany",
+}
+_MONEY_NAME = re.compile(
+    r"market_cap|earnings_per_share|eps|per_share|revenue|income|profit|^cash_|debt|assets|ebitda|"
+    r"enterprise_value|free_cash_flow|^Value\.Traded$|ebit$", re.I)
+_NOT_MONEY = re.compile(r"margin|ratio|_to_|return_on|percent|yield|payout|growth|^debt_to|^current_|^quick_", re.I)
+
+
+def is_money_field(name: str) -> bool:
+    return bool(_MONEY_NAME.search(name)) and not _NOT_MONEY.search(name)
+
+
+def with_native_currency(exchange: str, ticker: str, response: dict) -> dict:
+    """Return a copy of a scraper response with monetary fields in the listing currency."""
+    data = dict(response.get("data") or {})
+    region = EXCHANGE_REGION.get(exchange.upper())
+    money = [k for k in data if is_money_field(k) and isinstance(data[k], (int, float))]
+    currency = "USD"
+    if region and money:
+        symbol = f"{exchange.upper()}:{ticker.upper()}"
+        columns = money + ["currency", "fundamental_currency_code"]
+        try:
+            def produce():
+                r = requests.post(
+                    f"https://scanner.tradingview.com/{region}/scan",
+                    json={"symbols": {"tickers": [symbol]}, "columns": columns},
+                    timeout=10,
+                )
+                r.raise_for_status()
+                rows = r.json().get("data") or []
+                return dict(zip(columns, rows[0]["d"])) if rows else {}
+
+            native = cached(("native", symbol, tuple(money)), produce)
+            if native:
+                for k in money:
+                    if isinstance(native.get(k), (int, float)):
+                        data[k] = native[k]
+                currency = native.get("fundamental_currency_code") or native.get("currency") or currency
+                data["price_currency"] = native.get("currency") or currency
+        except Exception as e:  # keep USD figures rather than failing the request
+            logger.warning("Native currency lookup failed for %s:%s: %s", exchange, ticker, e)
+    data["currency"] = currency
+    return {**response, "data": data}
+
+
 # ─── Data fetch helpers (shared by JSON and download endpoints) ────
 def fetch_overview(exchange: str, ticker: str) -> dict:
     symbol = f"{exchange.upper()}:{ticker.upper()}"
-    return cached(("overview", symbol), lambda: overview_scraper.get_symbol_overview(symbol=symbol))
+    def produce():
+        resp = overview_scraper.get_symbol_overview(symbol=symbol)
+        return with_native_currency(exchange, ticker, resp) if resp.get("status") == "success" else resp
+
+    return cached(("overview", symbol), produce)
 
 
 def fetch_indicators(exchange: str, ticker: str, timeframe: str) -> dict:
@@ -109,7 +174,11 @@ def fetch_indicators(exchange: str, ticker: str, timeframe: str) -> dict:
 
 def fetch_fundamentals(exchange: str, ticker: str) -> dict:
     symbol = f"{exchange.upper()}:{ticker.upper()}"
-    return cached(("fundamentals", symbol), lambda: fundamentals_scraper.get_fundamentals(symbol=symbol))
+    def produce():
+        resp = fundamentals_scraper.get_fundamentals(symbol=symbol)
+        return with_native_currency(exchange, ticker, resp) if resp.get("status") == "success" else resp
+
+    return cached(("fundamentals", symbol), produce)
 
 
 def fetch_ohlcv(exchange: str, ticker: str, timeframe: str, candles: int) -> list:
@@ -127,14 +196,25 @@ def fetch_ohlcv(exchange: str, ticker: str, timeframe: str, candles: int) -> lis
     return cached(key, produce)
 
 
-def build_screener_filters(min_price, max_price, min_volume, min_change, max_change, min_market_cap):
+# Main listing venue per screener market (avoids OTC names and NSE/BSE double listings).
+MAIN_EXCHANGES = {
+    "india": ["NSE"], "america": ["NASDAQ", "NYSE", "AMEX"], "uk": ["LSE"],
+    "canada": ["TSX"], "germany": ["XETR"], "australia": ["ASX"],
+}
+
+
+def build_screener_filters(min_price, max_price, min_volume, min_change, max_change, min_market_cap,
+                           market=None, main_only=False):
     spec = [
         ("close", "egreater", min_price), ("close", "eless", max_price),
         ("volume", "egreater", min_volume),
         ("change", "egreater", min_change), ("change", "eless", max_change),
         ("market_cap_basic", "egreater", min_market_cap),
     ]
-    return [{"left": f, "operation": op, "right": v} for f, op, v in spec if v is not None]
+    filters = [{"left": f, "operation": op, "right": v} for f, op, v in spec if v is not None]
+    if main_only and market in MAIN_EXCHANGES:
+        filters.append({"left": "exchange", "operation": "in_range", "right": MAIN_EXCHANGES[market]})
+    return filters
 
 
 def run_scraper(call: Callable[[], dict], not_found: str) -> dict:
@@ -256,13 +336,19 @@ def screen_market(
     min_change: Optional[float] = None,
     max_change: Optional[float] = None,
     min_market_cap: Optional[float] = None,
+    main_only: bool = True,
 ):
-    """Screen stocks/crypto/forex with custom filters. Markets: america, india, uk, crypto, forex, global, etc."""
-    filters = build_screener_filters(min_price, max_price, min_volume, min_change, max_change, min_market_cap)
+    """Screen stocks/crypto/forex with custom filters. Markets: america, india, uk, crypto, forex, global, etc.
+
+    main_only keeps results to the main exchange(s) of the market (for example NSE for India).
+    """
+    filters = build_screener_filters(min_price, max_price, min_volume, min_change, max_change,
+                                     min_market_cap, market, main_only)
+    columns = STOCK_SCREENER_COLUMNS if market in STOCK_SCREENER_MARKETS else None
     key = ("screener", market, sort_by, sort_order, limit, json.dumps(filters, sort_keys=True))
     return run_scraper(
         lambda: cached(key, lambda: screener_scraper.screen(
-            market=market, filters=filters or None,
+            market=market, filters=filters or None, columns=columns,
             sort_by=sort_by, sort_order=sort_order, limit=limit)),
         "No data",
     )
@@ -371,10 +457,10 @@ def download_screener(
     min_price: Optional[float] = None, max_price: Optional[float] = None,
     min_volume: Optional[float] = None, min_change: Optional[float] = None,
     max_change: Optional[float] = None, min_market_cap: Optional[float] = None,
-    fmt: Fmt = "csv",
+    main_only: bool = True, fmt: Fmt = "csv",
 ):
     r = screen_market(market, sort_by, sort_order, limit, min_price, max_price,
-                      min_volume, min_change, max_change, min_market_cap)
+                      min_volume, min_change, max_change, min_market_cap, main_only)
     return _send(r["data"], f"{market}_screener", fmt)
 
 

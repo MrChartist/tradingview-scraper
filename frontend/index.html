@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Intelligence Terminal | @MrChartist</title>
     <meta name="description" content="Look up any symbol, scan market movers and run a screener on TradingView data. Download everything as CSV or JSON.">
-    <meta name="theme-color" content="#0b1020">
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1020'/%3E%3Cpath d='M7 22l5-7 5 4 8-11' fill='none' stroke='%2338bdf8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <meta name="theme-color" content="#1c2833">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c2833'/%3E%3Cpath d='M7 22l5-7 5 4 8-11' fill='none' stroke='%231abc9c' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Montserrat:wght@600;700;800&family=Roboto+Condensed:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script>
         // Apply saved theme before first paint to avoid a flash.
@@ -27,11 +27,11 @@
         <header class="topbar">
             <div class="brand">
                 <span class="brand-mark" aria-hidden="true">
-                    <svg viewBox="0 0 32 32" width="26" height="26"><path d="M5 23l6-8 5 4 10-12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <svg viewBox="0 0 32 32" width="28" height="28" fill="none" stroke-linecap="round"><path d="M8 5v22M16 9v16M24 4v20" stroke="currentColor" stroke-width="1.8" opacity=".55"/><rect x="5" y="11" width="6" height="10" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="6" height="8" rx="1.5" fill="#f39c12"/><rect x="21" y="8" width="6" height="11" rx="1.5" fill="currentColor"/></svg>
                 </span>
                 <div>
-                    <h1>Intelligence Terminal</h1>
-                    <p class="tagline">Market data from TradingView &middot; by @MrChartist</p>
+                    <h1><span class="at">@</span>MrChartist <span class="h1-sub">Terminal</span></h1>
+                    <p class="tagline">Intelligence Terminal &middot; Intelligent clarity, modern edge</p>
                 </div>
             </div>
             <div class="topbar-actions">
@@ -181,7 +181,7 @@
                     <div class="field narrow"><label for="screenerMinChange">Min change %</label><input type="number" id="screenerMinChange" step="any" placeholder="Any"></div>
                     <div class="field narrow"><label for="screenerMaxChange">Max change %</label><input type="number" id="screenerMaxChange" step="any" placeholder="Any"></div>
                     <div class="field narrow"><label for="screenerMinVol">Min volume</label><input type="number" id="screenerMinVol" step="any" placeholder="Any"></div>
-                    <div class="field narrow"><label for="screenerMinCap">Min cap (USD)</label><input type="number" id="screenerMinCap" step="any" placeholder="Any"></div>
+                    <div class="field narrow"><label for="screenerMinCap" id="screenerCapLabel">Min cap (₹ Cr)</label><input type="number" id="screenerMinCap" step="any" placeholder="e.g. 5000"></div>
                     <div class="field">
                         <label for="screenerSort">Sort by</label>
                         <select id="screenerSort">
@@ -196,6 +196,7 @@
                         <select id="screenerOrder"><option value="desc">High to low</option><option value="asc">Low to high</option></select>
                     </div>
                     <div class="field narrow"><label for="screenerLimit">Rows</label><input type="number" id="screenerLimit" value="25" min="1" max="200" inputmode="numeric"></div>
+                    <label class="check"><input type="checkbox" id="screenerMain" checked> <span>Main exchange only</span></label>
                     <button type="submit" class="btn primary" id="screenerBtn"><span class="btn-text">Screen</span><span class="spinner" aria-hidden="true"></span></button>
                     <button type="button" class="btn ghost" id="screenerReset">Reset</button>
                     <div class="chips full" id="screenerPresets" aria-label="Preset screens"></div>
@@ -217,7 +218,7 @@
 
         <footer class="foot">
             <span>Data via TradingView public endpoints. May be delayed. For research and education, not investment advice.</span>
-            <span>@MrChartist</span>
+            <span><a href="https://mrchartist.com" target="_blank" rel="noopener noreferrer">mrchartist.com</a> &middot; @MrChartist</span>
         </footer>
     </div>
 

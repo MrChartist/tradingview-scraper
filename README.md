@@ -1,6 +1,6 @@
 # TradingView Intelligence Terminal
 
-An enterprise-grade, real-time market data intelligence terminal. Built with a high-performance **FastAPI** backend and a clean, responsive frontend with **dark and light themes**, this project operates as a powerful wrapper around the `tradingview-scraper` library.
+An enterprise-grade, real-time market data intelligence terminal. Built with a high-performance **FastAPI** backend and a clean, responsive frontend in the **@MrChartist look** (deep navy, teal and orange, with dark and light themes), this project operates as a powerful wrapper around the `tradingview-scraper` library.
 
 **Repository:** [MrChartist/tradingview-scraper](https://github.com/MrChartist/tradingview-scraper)
 
@@ -25,11 +25,14 @@ Track the heartbeat of global markets across multiple asset classes and regions 
 
 ### 3. Dynamic Market Screener 🎯
 Filter thousands of assets using custom parameters.
-* **Available Filters:** Min/Max Price, Min/Max Change %, Minimum Volume, Minimum Market Cap (USD), with sort field and order.
+* **Available Filters:** Min/Max Price, Min/Max Change %, Minimum Volume, Minimum Market Cap, with sort field and order. Market cap is typed in the unit people use: ₹ Crore for India, millions elsewhere.
 * **Presets:** Active gainers, active losers, volume leaders, large caps and more in one click.
 * **Global Support:** Screen markets in USA, India, UK, Canada, Germany, Crypto, and Global Forex.
 
-### 4. Universal Data Export 💾
+### 4. Native-currency numbers 🇮🇳
+Monetary values are shown in the listing currency, not USD. Indian stocks read in rupees using Lakh and Crore (for example Reliance market cap `₹15.78 L Cr`, volume `1.68 Cr`). US stocks read in `$` with T/B/M. For symbols on NSE, BSE, NASDAQ, NYSE, AMEX, LSE, TSX, ASX and XETR the API replaces TradingView's USD fundamentals with the regional scanner's native figures. Other exchanges fall back to USD and are labelled `currency: USD` in the JSON.
+
+### 5. Universal Data Export 💾
 Every single module—Symbol Lookup, Market Movers, and Screener—supports one-click downloads in **CSV** or **JSON** formats (your current filters and timeframe are respected) for integration into your own data pipelines, backtesting engines, or spreadsheets.
 
 ---

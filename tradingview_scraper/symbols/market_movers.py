@@ -70,6 +70,7 @@ class MarketMovers:
         'earnings_per_share_basic_ttm',
         'logoid',
         'description',
+        'currency',
     ]
 
     def __init__(self, export_result: bool = False, export_type: str = 'json'):
