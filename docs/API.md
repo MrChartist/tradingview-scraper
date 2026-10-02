@@ -12,6 +12,7 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 | **Success** | `{"data": ..., "meta": {"request_id": "...", ...}}` |
 | **Error** | `{"error": {"code": "...", "message": "...", "hint": "what to do next", "request_id": "..."}}` |
 | **Error codes** | `bad_request` 400, `unauthorized` 401, `not_found` 404, `validation_error` 422, `rate_limited` 429, `upstream_error` 502, `unavailable` 503, `internal_error` 500 |
+| **Per-product keys** | Each product can have its own key with its own permissions and limits: see [BRIDGE.md](BRIDGE.md). A call the key may not make answers `403 forbidden`. |
 | **Rate limits** | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` on every response. `429` carries `Retry-After` (seconds). |
 | **Symbols** | `EXCHANGE:TICKER`, upper case, for example `NSE:RELIANCE`, `NASDAQ:AAPL`, `BINANCE:BTCUSDT`. Use `/v1/symbols/search` to find them. |
 | **Currency** | Monetary values are in the listing currency (rupees for NSE/BSE) and every response says which (`currency`). Exchanges outside NSE, BSE, NASDAQ, NYSE, AMEX, LSE, TSX, ASX and XETR fall back to USD, labelled as such. |
@@ -28,6 +29,8 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 | GET | `/v1/glossary` | What every market term means (no key) |
 | GET | `/v1/symbols/resolve?q=reliance` | Best `EXCHANGE:TICKER` for a name, plus alternatives. `country=IN` breaks ties (default from `DEFAULT_COUNTRY`) |
 | GET | `/v1/operations` | Every operation, including plugins (no key) |
+| GET | `/v1/schema` | JSON Schema for each operation's parameters (no key) |
+| GET | `/v1/asyncapi.json` | AsyncAPI description of the WebSocket for client generators (no key) |
 | GET | `/v1/symbols/search?q=reliance` | Matching symbols |
 | GET | `/v1/quotes?symbols=NSE:RELIANCE,NASDAQ:AAPL` | Latest quote for up to 100 symbols. `meta.not_found` lists unknown ones |
 | GET | `/v1/symbols/{exchange}/{ticker}` | Profile and key statistics |

@@ -63,3 +63,7 @@ docs/_templates
 
 # Environment variables file
 .env
+
+# Per-product access config (contains key hashes)
+clients.json
+.env

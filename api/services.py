@@ -7,6 +7,8 @@ from typing import Any, Callable, Optional
 import requests
 from fastapi import HTTPException
 
+from api.errors import ApiError
+
 # Import scraper modules
 from tradingview_scraper.symbols.overview import Overview
 from tradingview_scraper.symbols.technicals import Indicators
@@ -217,7 +219,7 @@ def run_scraper(call: Callable[[], dict], not_found: str) -> dict:
         if response.get("status") == "success":
             return response
         raise HTTPException(status_code=404, detail=response.get("error") or not_found)
-    except HTTPException:
+    except (HTTPException, ApiError):
         raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

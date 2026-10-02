@@ -45,6 +45,7 @@ docker compose up -d --build    # or: uvicorn api.main:app --port 8000
 curl -H "X-API-Key: $KEY" "http://localhost:8000/v1/quotes?symbols=NSE:RELIANCE,BINANCE:BTCUSDT"
 ```
 
+* **Connecting your products** (a key per product, recipes for Python, Node, Sheets, Telegram): [docs/BRIDGE.md](docs/BRIDGE.md). **Data sources and future brokers:** [docs/PROVIDERS.md](docs/PROVIDERS.md).
 * **WebSocket protocol:** [docs/WEBSOCKET.md](docs/WEBSOCKET.md). **Adding your own operations or live feeds:** [docs/EXTENDING.md](docs/EXTENDING.md).
 * **New to markets?** Read [docs/START_HERE.md](docs/START_HERE.md): five ideas in plain words, copy-paste code and a troubleshooting table.
 * Interactive docs at `/docs`; reference in [docs/API.md](docs/API.md); integration and upgrade path in [docs/INTEGRATION.md](docs/INTEGRATION.md).

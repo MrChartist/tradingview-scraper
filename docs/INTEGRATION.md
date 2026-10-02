@@ -1,6 +1,6 @@
 # Integrating your product
 
-New to markets? Start with [START_HERE.md](START_HERE.md).
+New to markets? Start with [START_HERE.md](START_HERE.md). Connecting several products? See [BRIDGE.md](BRIDGE.md).
 
 This service is a **bridge**: your product talks to one stable, documented API, and the server worries about where the data comes from. Keep that boundary and you can change the data source later without touching your product.
 

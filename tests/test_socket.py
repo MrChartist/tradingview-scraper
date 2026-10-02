@@ -220,3 +220,38 @@ def test_duplicate_operation_names_are_refused():
     from api import operations as ops
     with pytest.raises(ValueError):
         ops.operation("quotes", "again", ops.NoParams)(lambda p, ctx: None)
+
+
+# ── contract ───────────────────────────────────────────────────────
+def test_schema_describes_every_operation_and_updates_with_plugins():
+    with make() as c:
+        body = c.get("/v1/schema").json()["data"]
+    candles = body["operations"]["candles"]["params"]
+    assert candles["required"] == ["symbol"] and candles["properties"]["limit"]["maximum"] == 5000
+    assert set(body["channels"]) >= {"quotes", "movers"} and "quote" in body["frames_from_server"]
+    from api import operations as ops
+    assert set(body["operations"]) == set(ops.REGISTRY)
+
+
+def test_asyncapi_document_is_self_contained():
+    import json
+    with make() as c:
+        doc = c.get("/v1/asyncapi.json", headers={"host": "api.example.com"}).json()
+    assert doc["asyncapi"].startswith("2.") and "/v1/ws" in doc["channels"]
+    messages = doc["components"]["messages"]
+    assert "Request_quotes" in messages and "Server_quote" in messages
+    text = json.dumps(doc)
+    assert '"$defs"' not in text                                      # nested models were moved into components
+    refs = [part.split('"')[0] for part in text.split('"$ref": "')[1:]]
+    for ref in refs:                                                  # every reference resolves inside the document
+        node = doc
+        for key in ref.lstrip("#/").split("/"):
+            node = node[key]
+
+
+def test_schema_is_available_on_the_socket_without_a_key_limit():
+    with make() as c, connect(c) as ws:
+        ws.receive_json()
+        ws.send_json({"id": "1", "op": "schema"})
+        msg = ws.receive_json()
+    assert msg["type"] == "result" and "quotes" in msg["data"]["operations"]

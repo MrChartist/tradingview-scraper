@@ -76,7 +76,7 @@ Importing a module is what registers its operations and channels. A plugin that 
 
 ## Using a different data source
 
-The market data comes from `api/services.py` (requests) and `api/live.py` (the live hub). They are the only files that know where the data comes from. To use a licensed provider, replace the functions in those two files with ones that return the same shapes (see the quote object in [WEBSOCKET.md](WEBSOCKET.md)), or add a new operation next to the old one and move clients over gradually. Clients written against the SDKs or the socket do not change.
+Data sources are providers (see [PROVIDERS.md](PROVIDERS.md)): a plugin registers one, and `PROVIDERS` decides the order. Clients written against the SDKs or the socket do not change.
 
 ## Checklist for a new capability
 

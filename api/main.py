@@ -18,11 +18,12 @@ from fastapi.staticfiles import StaticFiles
 from api import services as svc
 from api.config import Settings, load_settings
 from api.errors import install_handlers
+from api import providers
 from api.live import QuoteHub
 from api.security import Guard
 from api.v1 import StreamSlots, build_router
+from api.version import VERSION
 
-VERSION = "3.0.0"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 access_log = logging.getLogger("market_terminal.access")
 
@@ -60,6 +61,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     for module in settings.plugins:           # fail fast: a broken plugin should stop the server, not hide
         importlib.import_module(module)
         logging.getLogger("market_terminal").info("Loaded plugin %s", module)
+    providers.build(settings)               # after plugins, so broker plugins can register their factories
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -51,7 +51,9 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
     auth = [Security(key_header), Depends(guard.http)]
 
     def run(request: Request, name: str, params: Optional[dict] = None) -> dict:
-        ctx = Context(settings=settings, hub=request.app.state.hub, auto_resolve=False)
+        who = getattr(request.state, "client", None)          # set by the key check; absent on public help routes
+        ctx = Context(settings=settings, hub=request.app.state.hub, auto_resolve=False,
+                      policy=guard.policy(who) if who else None)
         result = ops.execute(name, params, ctx)
         return envelope(request, result.data, **result.meta)
 
@@ -69,6 +71,16 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
     @router.get("/operations", tags=["meta"], summary="Every operation the WebSocket and REST API offer (no key needed)")
     def operations():
         return {"data": ops.describe()}
+
+    @router.get("/schema", tags=["meta"], summary="JSON Schema for every operation's parameters (no key needed)")
+    def schema():
+        from api.contract import build_schema
+        return {"data": build_schema(version)}
+
+    @router.get("/asyncapi.json", tags=["meta"], summary="AsyncAPI description of the WebSocket, for client generators (no key needed)")
+    def asyncapi(request: Request):
+        from api.contract import build_asyncapi
+        return build_asyncapi(version, str(request.base_url))
 
     @router.get("/markets", tags=["help"], summary="What you can ask for: markets, categories, timeframes, filter fields (no key needed)")
     def catalogue(request: Request):
@@ -151,9 +163,13 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
                             "Events: `quote` (data = a quote object). Comment lines are keep-alives. "
                             "Browsers can use EventSource, but it cannot set headers: pass the key as `?api_key=`.")
     async def stream_quotes(request: Request, symbols: str = Query(...)):
-        ctx = Context(settings=settings, auto_resolve=False)
-        wanted = ops.symbol_list(symbols, ctx, settings.ws_max_symbols_per_client)
         who = request.state.client
+        policy = guard.policy(who)
+        if not policy.allows_channel("quotes"):
+            raise ApiError(403, f"The key for '{who}' is not allowed to use the live quotes feed.", code="forbidden",
+                           hint="Ask the owner of the server to add 'quotes' to this client's channels.")
+        ctx = Context(settings=settings, auto_resolve=False, policy=policy)
+        wanted = ops.symbol_list(symbols, ctx, min(settings.ws_max_symbols_per_client, policy.max_symbols or 10 ** 6))
         slots = request.app.state.slots
         slots.acquire(who)
         hub: QuoteHub = request.app.state.hub

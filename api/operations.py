@@ -6,7 +6,6 @@ function and decorate it with `@operation(...)`; it is then reachable as
 `op: "<name>"` on the socket (see docs/EXTENDING.md). Handlers are plain blocking
 functions: transports run them in a worker thread.
 """
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -17,10 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from typing_extensions import Annotated
 
 from api import services as svc
-from api.config import Settings
+from api.config import ClientPolicy, Settings
 from api.errors import ApiError
 from api.glossary import CATALOG, FIELD_TERMS, GLOSSARY
 from api.live import valid_symbol
+from api.providers import registry
+from api.version import VERSION
 
 
 @dataclass
@@ -35,6 +36,12 @@ class Context:
     settings: Settings
     hub: Any = None
     auto_resolve: bool = False
+    policy: Optional[ClientPolicy] = None       # what this client may do; None = everything
+
+    @property
+    def max_symbols(self) -> int:
+        cap = self.policy.max_symbols if self.policy else None
+        return min(cap, 100) if cap else 100
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,10 @@ def execute(name: str, params: Optional[dict], ctx: Context) -> Result:
     if op is None:
         raise ApiError(400, f"Unknown operation '{name}'.", code="unknown_operation",
                        hint="Available operations: " + ", ".join(sorted(REGISTRY)) + ".")
+    if ctx.policy is not None and not op.public and not ctx.policy.allows_operation(name):
+        allowed = ", ".join(sorted(ctx.policy.operations or []))
+        raise ApiError(403, f"The key for '{ctx.policy.name}' is not allowed to use '{name}'.", code="forbidden",
+                       hint=f"This key may use: {allowed}. Ask the owner of the server to widen it.")
     try:
         parsed = op.model.model_validate(params or {})
     except ValidationError as e:
@@ -77,9 +88,18 @@ def execute(name: str, params: Optional[dict], ctx: Context) -> Result:
         raise ApiError(e.status_code, e.detail if isinstance(e.detail, str) else "Request failed")
 
 
-def describe() -> List[dict]:
+def describe(policy: Optional[ClientPolicy] = None) -> List[dict]:
+    """Every operation (or, with a policy, only the ones that client may use)."""
     return [{"name": o.name, "summary": o.summary, "public": o.public, "params": list(o.model.model_fields)}
-            for o in sorted(REGISTRY.values(), key=lambda o: o.name)]
+            for o in sorted(REGISTRY.values(), key=lambda o: o.name)
+            if policy is None or o.public or policy.allows_operation(o.name)]
+
+
+def _ask(used: List[str], capability: str, *args, exchange: Optional[str] = None):
+    """Ask the enabled data sources in order; remember which one answered (for meta.source)."""
+    name, value = registry.call(capability, *args, exchange=exchange)
+    used.append(name)
+    return value
 
 
 # ── shared parsing ─────────────────────────────────────────────────
@@ -235,11 +255,19 @@ def op_ping(p, ctx):
 def op_status(p, ctx):
     s = ctx.settings
     return Result({
+        "client": ctx.policy.name if ctx.policy else None,
         "live": ctx.hub.stats() if ctx.hub else None,
         "auth": "api_key" if s.auth_enabled else "open",
         "rate_limit_per_minute": s.rate_limit_per_minute,
         "cache_entries": len(svc._CACHE),
+        "sources": registry.describe(),
     })
+
+
+@operation("schema", "JSON Schema for every operation's parameters, for generating or checking clients.", NoParams, public=True)
+def op_schema(p, ctx):
+    from api.contract import build_schema
+    return Result(build_schema(VERSION))
 
 
 @operation("markets", "What you can ask for: markets, categories, timeframes, filter fields.", NoParams, public=True)
@@ -266,49 +294,57 @@ def op_resolve(p, ctx):
 @operation("search", "Find symbols by name or ticker.", SearchParams)
 def op_search(p, ctx):
     try:
-        results = svc.search_symbols_raw(p.q)[:p.limit]
+        source, results = registry.call("search", p.q)
+    except ApiError:
+        raise
     except Exception:
         raise ApiError(502, "Symbol search is unavailable right now.")
-    return Result(results, {"count": len(results)})
+    return Result(results[:p.limit], {"count": len(results[:p.limit]), "source": source})
 
 
 @operation("quotes", "Latest quote for up to 100 symbols (snapshot).", QuotesParams)
 def op_quotes(p, ctx):
-    wanted = symbol_list(p.symbols, ctx, 100)
+    wanted = symbol_list(p.symbols, ctx, ctx.max_symbols)
     try:
-        found, missing = svc.snapshot_quotes(wanted)
+        found, missing, sources = registry.quotes(wanted)
+    except (ApiError, svc.HTTPException):
+        raise
     except Exception as e:
         svc.logger.warning("Snapshot failed: %s", e)
         raise ApiError(502, "Upstream market data is unavailable right now.")
-    return Result(found, {"count": len(found), "not_found": missing})
+    return Result(found, {"count": len(found), "not_found": missing, "sources": sources})
 
 
 @operation("symbol", "Profile and key statistics, in the listing currency.", SymbolParams)
 def op_symbol(p, ctx):
     exchange, ticker = split_symbol(p.symbol, ctx)
-    r = svc.run_scraper(lambda: svc.fetch_overview(exchange, ticker), "Symbol not found or data unavailable.")
-    return Result(r["data"], {"currency": r["data"].get("currency")})
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "overview", exchange, ticker, exchange=exchange), "Symbol not found or data unavailable.")
+    return Result(r["data"], {"currency": r["data"].get("currency"), "source": used[0]})
 
 
 @operation("fundamentals", "Company fundamentals, in the listing currency.", SymbolParams)
 def op_fundamentals(p, ctx):
     exchange, ticker = split_symbol(p.symbol, ctx)
-    r = svc.run_scraper(lambda: svc.fetch_fundamentals(exchange, ticker), "Fundamental data not found.")
-    return Result(r["data"], {"currency": r["data"].get("currency")})
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "fundamentals", exchange, ticker, exchange=exchange), "Fundamental data not found.")
+    return Result(r["data"], {"currency": r["data"].get("currency"), "source": used[0]})
 
 
 @operation("technicals", "Technical indicator values (advanced).", TechnicalsParams)
 def op_technicals(p, ctx):
     exchange, ticker = split_symbol(p.symbol, ctx)
-    r = svc.run_scraper(lambda: svc.fetch_indicators(exchange, ticker, p.timeframe), "Indicators not found.")
-    return Result(r["data"], {"timeframe": p.timeframe})
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "technicals", exchange, ticker, p.timeframe, exchange=exchange), "Indicators not found.")
+    return Result(r["data"], {"timeframe": p.timeframe, "source": used[0]})
 
 
 @operation("candles", "Historical OHLCV candles, oldest first (time = epoch seconds, UTC).", CandlesParams)
 def op_candles(p, ctx):
     exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
     try:
-        raw = svc.fetch_ohlcv(exchange, ticker, p.timeframe, max(p.limit, 5))
+        raw = _ask(used, "candles", exchange, ticker, p.timeframe, max(p.limit, 5), exchange=exchange)
     except (ApiError, svc.HTTPException):
         raise
     except Exception as e:
@@ -320,27 +356,28 @@ def op_candles(p, ctx):
             "datetime": datetime.fromtimestamp(c["timestamp"], timezone.utc).isoformat(),
             "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"],
             "volume": c.get("volume")} for c in raw[-p.limit:]]
-    return Result(out, {"count": len(out), "timeframe": p.timeframe})
+    return Result(out, {"count": len(out), "timeframe": p.timeframe, "source": used[0]})
 
 
 @operation("news", "Latest headlines for a symbol.", NewsParams)
 def op_news(p, ctx):
     exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
     try:
-        items = svc.fetch_news(exchange, ticker, p.limit, p.language)
+        items = _ask(used, "news", exchange, ticker, p.limit, p.language, exchange=exchange)
+    except (ApiError, svc.HTTPException):
+        raise
     except Exception as e:
         svc.logger.warning("News failed: %s", e)
         raise ApiError(502, "News is unavailable right now.")
-    return Result(items, {"count": len(items)})
+    return Result(items, {"count": len(items), "source": used[0]})
 
 
 @operation("movers", "Gainers, losers, most active (liquid, main-exchange listings only).", MoversParams)
 def op_movers(p, ctx):
-    r = svc.run_scraper(
-        lambda: svc.cached(("movers", p.market, p.category, p.limit),
-                           lambda: svc.movers_scraper.scrape(market=p.market, category=p.category, limit=p.limit)),
-        "No data.")
-    return Result(r["data"], {"count": len(r["data"]), "market": p.market, "category": p.category})
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "movers", p.market, p.category, p.limit), "No data.")
+    return Result(r["data"], {"count": len(r["data"]), "market": p.market, "category": p.category, "source": used[0]})
 
 
 @operation("screener", "Screen a market with your own conditions.", ScreenerParams)
@@ -349,13 +386,9 @@ def op_screener(p, ctx):
     if p.main_only and p.market in svc.MAIN_EXCHANGES:
         filters.append({"left": "exchange", "operation": "in_range", "right": svc.MAIN_EXCHANGES[p.market]})
     columns = p.columns or (svc.STOCK_SCREENER_COLUMNS if p.market in svc.STOCK_SCREENER_MARKETS else None)
-    key = ("screener-v1", p.market, tuple(columns or ()), p.sort_by, p.sort_order, p.limit, json.dumps(filters, sort_keys=True, default=str))
-    r = svc.run_scraper(
-        lambda: svc.cached(key, lambda: svc.screener_scraper.screen(
-            market=p.market, filters=filters or None, columns=columns,
-            sort_by=p.sort_by, sort_order=p.sort_order, limit=p.limit)),
-        "No data.")
-    return Result(r["data"], {"count": len(r["data"]), "total_matches": r.get("totalCount"), "market": p.market})
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "screener", p.market, filters, columns, p.sort_by, p.sort_order, p.limit), "No data.")
+    return Result(r["data"], {"count": len(r["data"]), "total_matches": r.get("totalCount"), "market": p.market, "source": used[0]})
 
 
 def _calendar(kind: str, p: CalendarParams) -> Result:
@@ -364,12 +397,15 @@ def _calendar(kind: str, p: CalendarParams) -> Result:
     start, end = parse_when(p.from_, day), parse_when(p.to, day + 7 * 86400)
     if end < start:
         raise ApiError(400, "'to' must not be before 'from'.")
+    used: List[str] = []
     try:
-        rows = svc.fetch_calendar(kind, as_list(p.markets), start, end, p.limit)
+        rows = _ask(used, "calendar", kind, as_list(p.markets), start, end, p.limit)
+    except (ApiError, svc.HTTPException):
+        raise
     except Exception as e:
         svc.logger.warning("Calendar failed: %s", e)
         raise ApiError(502, "Calendar data is unavailable right now.")
-    return Result(rows, {"count": len(rows), "note": "Monetary values are in fundamental_currency_code (usually USD)."})
+    return Result(rows, {"count": len(rows), "source": used[0], "note": "Monetary values are in fundamental_currency_code (usually USD)."})
 
 
 @operation("earnings", "Upcoming and recent earnings announcements.", CalendarParams)

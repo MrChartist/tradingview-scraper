@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 
 from fastapi import Request, Response, WebSocket
 
-from api.config import Settings
+from api.config import ClientPolicy, Settings, sha256_hex
 from api.errors import ApiError
 
 
@@ -31,6 +31,11 @@ def match_key(settings: Settings, presented: Optional[str]) -> Optional[str]:
     for key, name in settings.api_keys.items():
         if hmac.compare_digest(key.encode(), presented.encode()):
             found = name
+    if settings.hashed_keys:                       # keys kept only as SHA-256 hashes
+        digest = sha256_hex(presented)
+        for stored, name in settings.hashed_keys.items():
+            if hmac.compare_digest(stored.encode(), digest.encode()):
+                found = name
     return found
 
 
@@ -51,8 +56,9 @@ class RateLimiter:
         self._lock = threading.Lock()
         self._windows: dict = {}
 
-    def hit(self, client: str) -> Tuple[bool, int, int]:
-        """Returns (allowed, remaining, seconds_until_reset)."""
+    def hit(self, client: str, per_minute: Optional[int] = None) -> Tuple[bool, int, int]:
+        """Returns (allowed, remaining, seconds_until_reset). `per_minute` overrides the default for this client."""
+        limit = per_minute or self.per_minute
         now = time.time()
         window = int(now // 60)
         with self._lock:
@@ -64,7 +70,7 @@ class RateLimiter:
             count += 1
             self._windows[client] = (w, count)
         reset = int(60 - (now % 60)) or 1
-        return count <= self.per_minute, max(0, self.per_minute - count), reset
+        return count <= limit, max(0, limit - count), reset
 
 
 class Guard:
@@ -86,13 +92,21 @@ class Guard:
             return name
         return name or f"ip:{client_ip(s, headers, fallback_ip)}"
 
+    def policy(self, name: Optional[str]) -> ClientPolicy:
+        """What this client may do. Clients without a CLIENTS_FILE entry may do everything."""
+        return self.settings.clients.get(name or "") or ClientPolicy(name or "anonymous")
+
+    def limit_for(self, name: Optional[str]) -> int:
+        return self.policy(name).rate_limit_per_minute or self.limiter.per_minute
+
     async def http(self, request: Request, response: Response) -> str:
         who = self.authenticate(request.headers, request.query_params,
                                 request.client.host if request.client else "unknown")
-        allowed, remaining, reset = self.limiter.hit(who)
+        limit = self.limit_for(who)
+        allowed, remaining, reset = self.limiter.hit(who, limit)
         request.state.client = who
         request.state.rate_headers = {
-            "X-RateLimit-Limit": str(self.limiter.per_minute),
+            "X-RateLimit-Limit": str(limit),
             "X-RateLimit-Remaining": str(remaining),
             "X-RateLimit-Reset": str(reset),
         }

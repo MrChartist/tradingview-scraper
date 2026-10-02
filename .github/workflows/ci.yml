@@ -25,9 +25,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r api/requirements-dev.txt pandas pyflakes
       - name: Static check (undefined names, unused imports)
-        run: python -m pyflakes api clients/python tests/test_api.py tests/test_v1.py tests/test_client.py tests/test_socket.py tests/test_ws_client.py
+        run: python -m pyflakes api examples clients/python tests/test_api.py tests/test_v1.py tests/test_client.py tests/test_socket.py tests/test_ws_client.py tests/test_providers.py tests/test_examples.py
       - name: Offline tests (no network needed)
-        run: python -m pytest tests/test_api.py tests/test_v1.py tests/test_client.py tests/test_socket.py tests/test_ws_client.py -q
+        run: python -m pytest tests/test_api.py tests/test_v1.py tests/test_client.py tests/test_socket.py tests/test_ws_client.py tests/test_providers.py tests/test_examples.py -q
 
   javascript:
     runs-on: ubuntu-latest
@@ -37,6 +37,6 @@ jobs:
         with:
           node-version: 22
       - name: Syntax check
-        run: node --check clients/js/index.js && node --check frontend/script.js
+        run: node --check clients/js/index.js && node --check frontend/script.js && node --check examples/node_quickstart.mjs
       - name: SDK tests
         run: node --test clients/js/test.mjs

@@ -253,3 +253,94 @@ def test_screener_columns_must_look_like_field_names():
     with make() as c:
         r = c.post("/v1/screener", json={"columns": ["close", "x; drop"]}, headers=H)
     assert r.status_code == 422
+
+
+# ── per-product clients: own key, permissions, limits ─────────────
+def clients_settings(tmp_path, entries, **kw):
+    import json as _json
+    from api.config import load_clients_file
+    f = tmp_path / "clients.json"
+    f.write_text(_json.dumps(entries))
+    plain, hashed, policies = load_clients_file(str(f))
+    return Settings(api_keys=plain, hashed_keys=hashed, clients=policies, enable_web_ui=False, **kw)
+
+
+def test_hashed_key_authenticates_and_limits_apply(tmp_path):
+    from api.config import sha256_hex
+    entries = [{"name": "nesto", "key_sha256": sha256_hex("nesto-secret-key-1234"), "operations": ["quotes"],
+                "rate_limit_per_minute": 2, "max_symbols": 2}]
+    with TestClient(create_app(clients_settings(tmp_path, entries))) as c, \
+            mock.patch.object(svc, "snapshot_quotes", return_value=([], [])):
+        ok = c.get("/v1/quotes?symbols=NSE:A", headers={"X-API-Key": "nesto-secret-key-1234"})
+        assert ok.status_code == 200 and ok.headers["x-ratelimit-limit"] == "2"
+        too_many = c.get("/v1/quotes?symbols=NSE:A,NSE:B,NSE:C", headers={"X-API-Key": "nesto-secret-key-1234"})
+        assert too_many.status_code == 400 and "At most 2" in too_many.json()["error"]["message"]
+        assert c.get("/v1/quotes?symbols=NSE:A", headers={"X-API-Key": "nesto-secret-key-1234"}).status_code == 429
+        assert c.get("/v1/quotes?symbols=NSE:A", headers={"X-API-Key": sha256_hex("nesto-secret-key-1234")}).status_code == 401
+
+
+def test_a_client_can_only_use_its_operations(tmp_path):
+    entries = [{"name": "reports", "key": "reports-secret-key-1234", "operations": ["fundamentals"]}]
+    with TestClient(create_app(clients_settings(tmp_path, entries))) as c:
+        denied = c.get("/v1/markets/movers", headers={"X-API-Key": "reports-secret-key-1234"})
+        public = c.get("/v1/markets")                      # help is always open
+    err = denied.json()["error"]
+    assert denied.status_code == 403 and err["code"] == "forbidden" and "fundamentals" in err["hint"]
+    assert public.status_code == 200
+
+
+def test_socket_hello_and_requests_follow_the_clients_permissions(tmp_path):
+    entries = [{"name": "nesto", "key": "nesto-secret-key-1234", "operations": ["quotes", "candles"],
+                "channels": ["quotes"], "max_symbols": 1, "rate_limit_per_minute": 50}]
+    hdr = {"X-API-Key": "nesto-secret-key-1234"}
+    with TestClient(create_app(clients_settings(tmp_path, entries))) as c, \
+            c.websocket_connect("/v1/ws", headers=hdr) as ws, mock.patch.object(QuoteHub, "_ensure_running"):
+        hello = ws.receive_json()
+        names = {o["name"] for o in hello["operations"]}
+        assert {"quotes", "candles", "markets", "ping"} <= names and "screener" not in names     # help stays visible
+        assert [ch["name"] for ch in hello["channels"]] == ["quotes"]
+        assert hello["limits"]["max_symbols"] == 1 and hello["limits"]["requests_per_minute"] == 50
+        ws.send_json({"id": "1", "op": "screener", "params": {}})
+        assert ws.receive_json()["code"] == "forbidden"
+        ws.send_json({"id": "2", "op": "subscribe", "params": {"channel": "movers"}})
+        assert ws.receive_json()["code"] == "forbidden"
+        ws.send_json({"id": "3", "op": "subscribe", "params": {"channel": "quotes", "symbols": ["NSE:A", "NSE:B"]}})
+        sub = ws.receive_json()
+        assert sub["symbols"] == ["NSE:A"] and sub["rejected"] == [{"symbol": "NSE:B", "reason": "too_many_symbols"}]
+
+
+def test_clients_file_rejects_mistakes_with_clear_messages(tmp_path):
+    import json as _json
+    from api.config import load_clients_file
+
+    def check(entries, text):
+        f = tmp_path / "bad.json"
+        f.write_text(_json.dumps(entries))
+        with pytest.raises(ValueError) as e:
+            load_clients_file(str(f))
+        assert text in str(e.value)
+
+    check([{"name": "a b", "key": "x" * 20}], "'name' must be")
+    check([{"name": "a"}], "exactly one of")
+    check([{"name": "a", "key": "short"}], "at least 16")
+    check([{"name": "a", "key_sha256": "zz"}], "64 hex")
+    check([{"name": "a", "key": "x" * 20}, {"name": "a", "key": "y" * 20}], "used twice")
+    check([{"name": "a", "key": "x" * 20}, {"name": "b", "key": "x" * 20}], "already used")
+    check([{"name": "a", "key": "x" * 20, "operations": "quotes"}], "list of names")
+    check([{"name": "a", "key": "x" * 20, "max_symbols": 0}], "positive")
+
+
+def test_key_tool_creates_a_hashed_entry(tmp_path, capsys):
+    import json as _json
+    from api import keys
+    from api.config import load_clients_file, sha256_hex
+    target = tmp_path / "clients.json"
+    assert keys.main(["nesto", "--operations", "quotes,candles", "--channels", "quotes", "--rate", "300", "--append", str(target)]) == 0
+    printed = capsys.readouterr().out
+    key = [line.strip() for line in printed.splitlines() if len(line.strip()) >= 30 and " " not in line.strip()][0]
+    entry = _json.loads(target.read_text())[0]
+    assert entry["key_sha256"] == sha256_hex(key) and "key" not in entry and key not in target.read_text()
+    assert entry["operations"] == ["quotes", "candles"] and entry["rate_limit_per_minute"] == 300
+    assert load_clients_file(str(target))[2]["nesto"].allows_operation("quotes")
+    assert keys.main(["nesto", "--append", str(target)]) == 2            # no duplicates
+    assert keys.main(["bad name"]) == 2

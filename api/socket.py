@@ -37,6 +37,7 @@ from api.config import Settings
 from api.errors import ApiError
 from api.live import QuoteHub, Subscription, valid_symbol
 from api.operations import Context
+from api.providers import registry
 from api.security import Guard
 
 logger = logging.getLogger("market_terminal.socket")
@@ -128,7 +129,7 @@ class QuotesChannel(Channel):
                            hint="Names like 'reliance' work too.")
         good, rejected, resolved = await self._targets(session, raw)
         sub = session.quote_sub
-        room = max(session.settings.ws_max_symbols_per_client - len(sub.symbols), 0)
+        room = max(session.max_symbols() - len(sub.symbols), 0)
         for sym in good[room:]:
             rejected.append({"symbol": sym, "reason": "too_many_symbols"})
         try:
@@ -214,6 +215,7 @@ class Session:
         self.version = version
         self.hub: QuoteHub = ws.app.state.hub
         self.ctx = Context(settings=settings, hub=self.hub, auto_resolve=True)
+        self.policy = guard.policy(None)
         self.who = "?"
         self.state: Dict[str, Any] = {}
         self.quote_sub: Subscription = Subscription("?")
@@ -231,15 +233,20 @@ class Session:
         await self.send(api_error_frame(None, e))
         await self.ws.close(code=code)
 
+    def max_symbols(self) -> int:
+        return min(self.settings.ws_max_symbols_per_client, self.policy.max_symbols or 10 ** 6)
+
     def hello(self) -> dict:
         s = self.settings
         return {
             "type": "hello", "service": "tickvale", "version": self.version, "server_time": int(time.time()),
             "auth": "api_key" if s.auth_enabled else "open", "client": self.who,
-            "operations": ops.describe(),
-            "channels": [{"name": c.name, "summary": c.summary, "params": c.params} for c in CHANNELS.values()],
-            "limits": {"max_symbols": s.ws_max_symbols_per_client, "max_in_flight": MAX_INFLIGHT,
-                       "max_message_bytes": MAX_MESSAGE_BYTES, "requests_per_minute": s.rate_limit_per_minute},
+            "operations": ops.describe(self.policy),
+            "sources": [{"name": p.name, "capabilities": sorted(p.capabilities)} for p in registry.enabled],
+            "channels": [{"name": c.name, "summary": c.summary, "params": c.params}
+                         for c in CHANNELS.values() if self.policy.allows_channel(c.name)],
+            "limits": {"max_symbols": self.max_symbols(), "max_in_flight": MAX_INFLIGHT,
+                       "max_message_bytes": MAX_MESSAGE_BYTES, "requests_per_minute": self.guard.limit_for(self.who)},
             "how_to": {"ask": {"id": "1", "op": "quotes", "params": {"symbols": ["reliance", "bitcoin"]}},
                        "subscribe": {"op": "subscribe", "params": {"channel": "quotes", "symbols": ["NSE:TCS"]}}},
             "note": "Free stock prices are usually 15 minutes delayed. Check each quote's 'freshness'.",
@@ -252,7 +259,9 @@ class Session:
         except ApiError as e:
             return await self._refuse(4401, e)
         self.quote_sub = Subscription(self.who)
-        allowed, _, reset = self.guard.limiter.hit(self.who)
+        self.policy = self.guard.policy(self.who)
+        self.ctx.policy = self.policy
+        allowed, _, reset = self.guard.limiter.hit(self.who, self.guard.limit_for(self.who))
         if not allowed:
             return await self._refuse(4429, ApiError(429, "Rate limit exceeded.", hint=f"Wait {reset} seconds."))
         try:
@@ -311,7 +320,7 @@ class Session:
             await self.send({"type": "heartbeat", "time": int(time.time())})
 
     def _spend(self) -> Optional[dict]:
-        allowed, _, reset = self.guard.limiter.hit(self.who)
+        allowed, _, reset = self.guard.limiter.hit(self.who, self.guard.limit_for(self.who))
         return None if allowed else error_frame(None, "rate_limited", "Rate limit exceeded.",
                                                 f"Wait {reset} seconds. Subscribe to a channel instead of asking repeatedly.", retry_after=reset)
 
@@ -339,6 +348,9 @@ class Session:
         if ch is None:
             return await self.send(error_frame(fid, "unknown_channel", f"No channel called '{name}'.",
                                                "Available: " + ", ".join(CHANNELS) + "."))
+        if not self.policy.allows_channel(name):
+            return await self.send(error_frame(fid, "forbidden", f"The key for '{self.who}' is not allowed to use the '{name}' feed.",
+                                               "Ask the owner of the server to add it to this client's channels."))
         try:
             info = await (ch.subscribe if op == "subscribe" else ch.unsubscribe)(self, params)
         except ApiError as e:
