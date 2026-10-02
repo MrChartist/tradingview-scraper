@@ -29,7 +29,7 @@ VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"
 Fmt = Literal["csv", "json"]
 
 app = FastAPI(
-    title="TradingView Intelligence Terminal API",
+    title="Open Market Terminal API",
     description="A REST API and web terminal built on the tradingview-scraper package.",
     version="2.1.0",
 )
@@ -97,7 +97,7 @@ screener_scraper = Screener()
 # ─── Health ────────────────────────────────────────────────────────
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "message": "TradingView Intelligence Terminal is running"}
+    return {"status": "ok", "message": "Open Market Terminal is running"}
 
 
 # ─── Native-currency values ────────────────────────────────────────

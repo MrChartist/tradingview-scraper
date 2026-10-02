@@ -1,8 +1,6 @@
-# TradingView Intelligence Terminal
+# Open Market Terminal
 
-An enterprise-grade, real-time market data intelligence terminal. Built with a high-performance **FastAPI** backend and a clean, responsive frontend in the **@MrChartist look** (deep navy, teal and orange, with dark and light themes), this project operates as a powerful wrapper around the `tradingview-scraper` library.
-
-**Repository:** [MrChartist/tradingview-scraper](https://github.com/MrChartist/tradingview-scraper)
+A real-time market data terminal for stocks, crypto and forex. A **FastAPI** backend and a clean, responsive frontend (dark and light themes) sit on top of the `tradingview-scraper` library.
 
 ---
 
@@ -137,4 +135,5 @@ When you use the scraper classes directly with `export_result=True`, JSON/CSV ou
 
 ---
 
-*Built by Mr. Chartist*
+## Credits and disclaimer
+The scraping library is based on [mnwato/tradingview-scraper](https://github.com/mnwato/tradingview-scraper). This is an unofficial project, not affiliated with or endorsed by TradingView. Data comes from public endpoints, may be delayed or incomplete, and is not investment advice.
