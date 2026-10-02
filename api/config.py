@@ -137,6 +137,9 @@ class Settings:
     providers: List[str] = field(default_factory=lambda: ["tradingview"])
     # Reserved. Tickvale is read-only; this only lets a provider declare order capabilities (none are used yet).
     allow_trading: bool = False
+    # NSE India official MCP servers (provider "nse"). Free, no key.
+    nse_live_url: str = "https://mcp.nseindia.in/cmmkt/mcp"
+    nse_eod_url: str = "https://mcp.nseindia.in/bhavcopy/cm/mcp"
 
     @property
     def auth_enabled(self) -> bool:
@@ -169,4 +172,6 @@ def load_settings() -> Settings:
         plugins=_list("PLUGINS"),
         providers=_list("PROVIDERS") or ["tradingview"],
         allow_trading=_bool("ALLOW_TRADING", False),
+        nse_live_url=os.getenv("NSE_MCP_LIVE_URL", "https://mcp.nseindia.in/cmmkt/mcp"),
+        nse_eod_url=os.getenv("NSE_MCP_EOD_URL", "https://mcp.nseindia.in/bhavcopy/cm/mcp"),
     )

@@ -132,7 +132,19 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
     def news(request: Request, exchange: str, ticker: str, limit: int = Query(20, ge=1, le=100), language: str = "en"):
         return run(request, "news", {"symbol": f"{exchange}:{ticker}", "limit": limit, "language": language})
 
+    @router.get("/symbols/{exchange}/{ticker}/corporate-actions", tags=["symbols"], dependencies=auth,
+                summary="Dividends, splits and bonus issues (Indian stocks; needs the 'nse' data source)")
+    def corporate_actions(request: Request, exchange: str, ticker: str,
+                          date_from: Optional[str] = Query(None, alias="from", description="YYYY-MM-DD. Default: one year ago."),
+                          date_to: Optional[str] = Query(None, alias="to", description="YYYY-MM-DD. Default: today.")):
+        return run(request, "corporate_actions", {"symbol": f"{exchange}:{ticker}", "from": date_from, "to": date_to})
+
     # ── markets ───────────────────────────────────────────────────
+    @router.get("/markets/breadth", tags=["markets"], dependencies=auth,
+                summary="How many stocks rose, fell or stayed flat (India; needs the 'nse' data source)")
+    def breadth(request: Request, date: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD. Default: the latest trading day.")):
+        return run(request, "market_breadth", {"date": date})
+
     @router.get("/markets/movers", tags=["markets"], dependencies=auth,
                 summary="Gainers, losers, most active (liquid, main-exchange listings only)")
     def movers(request: Request, market: str = Market, category: str = "gainers", limit: int = Query(25, ge=1, le=100)):

@@ -9,18 +9,19 @@ functions: transports run them in a worker thread.
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Literal, Optional, Type, Union
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from typing_extensions import Annotated
 
+from api import markets_india as india
 from api import services as svc
 from api.config import ClientPolicy, Settings
 from api.errors import ApiError
 from api.glossary import CATALOG, FIELD_TERMS, GLOSSARY
 from api.live import valid_symbol
-from api.providers import registry
+from api.providers import NotSupported, registry
 from api.version import VERSION
 
 
@@ -210,6 +211,16 @@ class NewsParams(SymbolParams):
     language: str = Field("en", min_length=2, max_length=5)
 
 
+class CorporateActionsParams(SymbolParams):
+    from_: Optional[str] = Field(None, alias="from", description="YYYY-MM-DD. Default: one year ago.")
+    to: Optional[str] = Field(None, description="YYYY-MM-DD. Default: today.")
+
+
+class BreadthParams(_Params):
+    market: Literal["india"] = "india"
+    date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD. Default: the latest trading day.")
+
+
 class MoversParams(_Params):
     market: str = "stocks-india"
     category: str = "gainers"
@@ -371,6 +382,40 @@ def op_news(p, ctx):
         svc.logger.warning("News failed: %s", e)
         raise ApiError(502, "News is unavailable right now.")
     return Result(items, {"count": len(items), "source": used[0]})
+
+
+@operation("corporate_actions", "Dividends, splits and bonus issues for an Indian stock (needs the 'nse' data source).", CorporateActionsParams)
+def op_corporate_actions(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    today = india.now_ist().date()
+    start = p.from_ or (today - timedelta(days=365)).isoformat()
+    end = p.to or today.isoformat()
+    used: List[str] = []
+    try:
+        rows = _ask(used, "corporate_actions", exchange, ticker, start, end, exchange=exchange)
+    except (ApiError, svc.HTTPException):
+        raise
+    except NotSupported:
+        raise ApiError(404, f"No corporate actions found for {exchange}:{ticker}.", hint="Check the symbol, or widen the dates.")
+    except Exception as e:
+        svc.logger.warning("Corporate actions failed: %s", e)
+        raise ApiError(502, "Corporate actions are unavailable right now.")
+    return Result(rows, {"count": len(rows), "from": start, "to": end, "source": used[0]})
+
+
+@operation("market_breadth", "How many stocks rose, fell or stayed flat on a day (India; needs the 'nse' data source).", BreadthParams)
+def op_market_breadth(p, ctx):
+    used: List[str] = []
+    try:
+        data = _ask(used, "market_breadth", "NSE", p.date, exchange="NSE")
+    except (ApiError, svc.HTTPException):
+        raise
+    except NotSupported:
+        raise ApiError(404, "No market breadth for that date.", hint="Markets are closed on weekends and holidays; try another date.")
+    except Exception as e:
+        svc.logger.warning("Market breadth failed: %s", e)
+        raise ApiError(502, "Market breadth is unavailable right now.")
+    return Result(data, {"source": used[0]})
 
 
 @operation("movers", "Gainers, losers, most active (liquid, main-exchange listings only).", MoversParams)

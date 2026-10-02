@@ -126,8 +126,10 @@ registry = Providers()
 
 def build(settings: Settings) -> Providers:
     """(Re)create the enabled providers from settings, in the order given."""
+    from api.providers.nse import NseProvider
     from api.providers.tradingview import TradingViewProvider
     AVAILABLE.setdefault("tradingview", lambda s: TradingViewProvider())
+    AVAILABLE.setdefault("nse", lambda s: NseProvider(s))
     registry.clear()
     for name in settings.providers or ["tradingview"]:
         factory = AVAILABLE.get(name)

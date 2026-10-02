@@ -34,6 +34,21 @@ A provider lists what it can do; everything else is skipped.
 
 A provider can also say which exchanges it serves (`exchanges = {"NSE", "BSE"}`), so a broker is only asked about its own markets.
 
+## NSE official source (`nse`)
+
+NSE publishes an official MCP server. Tickvale can use it as a source for Indian equities:
+
+```
+PROVIDERS=nse,tradingview
+```
+
+* Serves: `NSE:` quotes (about 5 minutes delayed in market hours), daily candles (about 5 years), top gainers/losers, corporate actions and market breadth (advances/declines).
+* Anything it does not serve (indices, crypto, other exchanges, intraday candles) falls to TradingView. A slow or failing NSE never breaks a request.
+* Cold start can take a few seconds; quotes are cached for 15 s, movers for 60 s.
+* Set `NSE_MCP_LIVE_URL` / `NSE_MCP_EOD_URL` only if NSE changes the addresses.
+
+**Usage terms: Needs verification.** NSE's terms are reported (via a secondary source) as "informational and educational purposes, not for real-time trading, commercial deployment, or training AI models". Read NSE's own page (https://www.nseindia.com/nse-mcp) before using this in a product. It is off by default.
+
 ## Read-only, on purpose
 
 Tickvale only reads data. The names `place_order`, `modify_order` and `cancel_order` are reserved for later, and a provider that declares any of them is **refused at startup** unless `ALLOW_TRADING=true`. Even then, no operation uses them yet. When orders are added they will arrive as their own operations with their own permission, never as a side effect of a data provider, and will need design for the regulations that apply to automated trading.

@@ -53,6 +53,8 @@ Send `{"id": "<anything>", "op": "<operation>", "params": {...}}`. You get back 
 | `movers` | `market`, `category`, `limit` | Gainers, losers, most active |
 | `screener` | `market`, `conditions`, `columns`, `sort_by`, `sort_order`, `limit`, `main_only` | Stocks matching your rules |
 | `earnings`, `dividends` | `markets`, `from`, `to`, `limit` | Calendar events |
+| `corporate_actions` | `symbol` | Dividends, splits, bonus (needs the `nse` source) |
+| `market_breadth` | `date` (optional) | Advances / declines (needs the `nse` source) |
 | `markets`, `glossary` | none | Valid values and plain-language terms |
 | `status` | none | Live-feed health and limits |
 | `ping` | none | `pong` (free, not rate limited) |

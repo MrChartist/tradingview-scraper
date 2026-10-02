@@ -13,7 +13,7 @@ from api.providers.base import Provider, READ_CAPABILITIES
 class TradingViewProvider(Provider):
     name = "tradingview"
     description = "TradingView public endpoints (unofficial). Stock prices are usually 15 minutes delayed."
-    capabilities = set(READ_CAPABILITIES)
+    capabilities = set(READ_CAPABILITIES) - {"corporate_actions", "market_breadth"}
 
     # Looked up on `svc` at call time so tests and plugins can swap the underlying functions.
     def search(self, q: str) -> List[Dict]:

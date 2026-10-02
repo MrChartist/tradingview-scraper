@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 READ_CAPABILITIES = {
     "search", "quotes", "candles", "overview", "fundamentals", "technicals",
-    "news", "movers", "screener", "calendar",
+    "news", "movers", "screener", "calendar", "corporate_actions", "market_breadth",
 }
 # Reserved for later. Nothing in Tickvale calls these today.
 WRITE_CAPABILITIES = {"place_order", "modify_order", "cancel_order"}
@@ -73,4 +73,12 @@ class Provider:
         raise NotSupported
 
     def calendar(self, kind: str, markets: List[str], ts_from: int, ts_to: int, limit: int) -> List[Dict]:
+        raise NotSupported
+
+    def corporate_actions(self, exchange: str, ticker: str, date_from: str, date_to: str) -> List[Dict]:
+        """Dividends, splits, bonus issues: [{ex_date, type, purpose, adjustment_factor}]. Dates are YYYY-MM-DD."""
+        raise NotSupported
+
+    def market_breadth(self, exchange: str, date: Optional[str]) -> Dict:
+        """How many stocks rose, fell or were unchanged on a day: {date, advances, declines, unchanged, ...}."""
         raise NotSupported
