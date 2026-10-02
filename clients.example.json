@@ -1,0 +1,16 @@
+[
+  {
+    "name": "nesto",
+    "key_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "operations": ["quotes", "candles", "symbol", "movers", "resolve", "search"],
+    "channels": ["quotes"],
+    "rate_limit_per_minute": 300,
+    "max_symbols": 50
+  },
+  {
+    "name": "reports",
+    "key_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "operations": ["fundamentals", "candles", "earnings", "dividends"],
+    "rate_limit_per_minute": 60
+  }
+]

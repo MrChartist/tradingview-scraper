@@ -1,351 +1,123 @@
-import io
-import csv
-import json
+"""Tickvale: web UI plus a production API for TradingView market data.
+
+Run:  uvicorn api.main:app --port 8000
+Docs: /docs (interactive), /redoc.  Configuration: environment variables, see .env.example.
+"""
+import asyncio
+import importlib
 import logging
-from typing import Optional, List
+import time
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-# Import scraper modules
-from tradingview_scraper.symbols.overview import Overview
-from tradingview_scraper.symbols.technicals import Indicators
-from tradingview_scraper.symbols.fundamental_graphs import FundamentalGraphs
-from tradingview_scraper.symbols.market_movers import MarketMovers
-from tradingview_scraper.symbols.screener import Screener
+from api import services as svc
+from api.config import Settings, load_settings
+from api.errors import install_handlers
+from api import operations as ops
+from api import providers
+from api.paper import PaperBook, run_forever
+from api.live import QuoteHub
+from api.security import Guard
+from api.v1 import StreamSlots, build_router
+from api.version import VERSION
 
-app = FastAPI(
-    title="TradingView Scraper API",
-    description="A comprehensive API wrapper around the tradingview-scraper package.",
-    version="2.0.0"
-)
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+access_log = logging.getLogger("market_terminal.access")
 
-# ─── Static File Routes ────────────────────────────────────────────
-@app.get("/")
-def read_root():
-    return FileResponse("frontend/index.html")
+DESCRIPTION = """
+Market data for **stocks, crypto and forex** built on public TradingView endpoints.
 
-@app.get("/style.css")
-def read_style():
-    return FileResponse("frontend/style.css")
+* **REST** under `/v1`: quotes, symbol profile, fundamentals, technicals, candles, news, movers, screener, calendar.
+* **WebSocket (primary)**: `/v1/ws`. One connection to ask for anything and to receive live quotes and lists. Read the `hello` message it sends.
+* **Live over SSE**: `/v1/stream/quotes` for clients that cannot use WebSockets.
+* **Auth**: send `X-API-Key` (or `Authorization: Bearer`). Without configured keys the API runs in open mode.
+* **Freshness**: every quote says whether it is `realtime` or `delayed` (and by how many seconds). Exchanges such as NSE and NASDAQ are typically delayed 15 minutes without a paid data licence.
 
-@app.get("/script.js")
-def read_script():
-    return FileResponse("frontend/script.js")
+Unofficial; not affiliated with TradingView. See the README for terms-of-use and licensing cautions.
+"""
 
-
-# ─── Initialize Scrapers ───────────────────────────────────────────
-overview_scraper = Overview()
-indicators_scraper = Indicators()
-fundamentals_scraper = FundamentalGraphs()
-movers_scraper = MarketMovers()
-screener_scraper = Screener()
-
-
-# ─── Health ────────────────────────────────────────────────────────
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "message": "TradingView Intelligence Terminal is running"}
-
-
-# ───────────────────────────────────────────────────────────────────
-#  SYMBOL-SPECIFIC ENDPOINTS
-# ───────────────────────────────────────────────────────────────────
-
-@app.get("/api/overview/{exchange}/{ticker}")
-def get_symbol_overview(exchange: str, ticker: str):
-    symbol = f"{exchange.upper()}:{ticker.upper()}"
-    try:
-        response = overview_scraper.get_symbol_overview(symbol=symbol)
-        if response.get("status") == "success":
-            return response
-        raise HTTPException(status_code=404, detail="Symbol not found or data unavailable")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+TAGS = [
+    {"name": "help", "description": "New to markets? Start here: valid values and plain-language term meanings."},
+    {"name": "quotes", "description": "Latest prices for many symbols at once."},
+    {"name": "live", "description": "Continuous quotes over WebSocket or server-sent events."},
+    {"name": "symbols", "description": "Per-symbol data."},
+    {"name": "markets", "description": "Market-wide lists and the screener."},
+    {"name": "calendar", "description": "Earnings and dividends."},
+    {"name": "meta", "description": "Health and status."},
+]
 
 
-@app.get("/api/indicators/{exchange}/{ticker}")
-def get_symbol_indicators(exchange: str, ticker: str, timeframe: str = "1d"):
-    try:
-        response = indicators_scraper.scrape(
-            exchange=exchange.upper(),
-            symbol=ticker.upper(),
-            timeframe=timeframe,
-            allIndicators=True
-        )
-        if response.get("status") == "success":
-            return response
-        raise HTTPException(status_code=404, detail="Indicators not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+def create_app(settings: Optional[Settings] = None) -> FastAPI:
+    settings = settings or load_settings()
+
+    # The scraper library configures root logging at DEBUG on import; apply ours.
+    logging.getLogger().setLevel(settings.log_level)
+    for noisy in ("urllib3", "websockets", "websocket"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    svc.CACHE_TTL = settings.cache_ttl_seconds
+    for module in settings.plugins:           # fail fast: a broken plugin should stop the server, not hide
+        importlib.import_module(module)
+        logging.getLogger("market_terminal").info("Loaded plugin %s", module)
+    providers.build(settings)               # after plugins, so broker plugins can register their factories
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.hub = QuoteHub(max_symbols=settings.hub_max_upstream_symbols)
+        paper_task = None
+        if settings.paper_poll_seconds > 0:
+            app.state.paper = PaperBook(settings.paper_file, settings.paper_max_runs_per_client)
+            paper_task = asyncio.create_task(run_forever(app.state.paper, ops.paper_fetcher(settings), settings.paper_poll_seconds))
+        if not settings.auth_enabled:
+            logging.getLogger("market_terminal").warning(
+                "API_KEYS is not set: the API is in OPEN mode. Set API_KEYS before exposing it publicly.")
+        yield
+        if paper_task:
+            paper_task.cancel()
+        await app.state.hub.close()
+
+    app = FastAPI(title="Tickvale API", description=DESCRIPTION, version=VERSION,
+                  openapi_tags=TAGS, lifespan=lifespan)
+    app.state.settings = settings
+    app.state.slots = StreamSlots(settings.ws_max_clients_per_key)
+    install_handlers(app)
+
+    if settings.cors_origins:
+        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST", "DELETE"],
+                           allow_headers=["X-API-Key", "Authorization", "Content-Type"],
+                           expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Request-ID"])
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:16]
+        request.state.request_id = rid
+        started = time.perf_counter()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = rid
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if request.url.path.startswith("/v1"):
+            access_log.info("%s %s -> %s %.0fms client=%s rid=%s", request.method, request.url.path, response.status_code,
+                            (time.perf_counter() - started) * 1000, getattr(request.state, "client", "-"), rid)
+        return response
+
+    guard = Guard(settings)
+    app.state.guard = guard
+    app.include_router(build_router(guard, settings, VERSION))
+
+    @app.get("/health", tags=["meta"], include_in_schema=False)
+    def health():
+        return {"status": "ok", "message": "Tickvale is running"}
+
+    if settings.enable_web_ui:
+        from api.ui import router as ui_router
+        app.include_router(ui_router)
+        app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+    return app
 
 
-@app.get("/api/fundamentals/{exchange}/{ticker}")
-def get_symbol_fundamentals(exchange: str, ticker: str):
-    symbol = f"{exchange.upper()}:{ticker.upper()}"
-    try:
-        response = fundamentals_scraper.get_fundamentals(symbol=symbol)
-        if response.get("status") == "success":
-            return response
-        raise HTTPException(status_code=404, detail="Fundamental data not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/ohlcv/{exchange}/{ticker}")
-def get_ohlcv(
-    exchange: str,
-    ticker: str,
-    timeframe: str = "1d",
-    candles: int = 100
-):
-    """Fetch historical OHLCV candle data via TradingView WebSocket."""
-    try:
-        from tradingview_scraper.symbols.stream import Streamer
-        streamer = Streamer(export_result=True, export_type='json')
-        result = streamer.stream(
-            exchange=exchange.upper(),
-            symbol=ticker.upper(),
-            timeframe=timeframe,
-            numb_price_candles=candles
-        )
-        ohlc_data = result.get("ohlc", [])
-        if not ohlc_data:
-            raise HTTPException(status_code=404, detail="No OHLCV data returned")
-        return {"status": "success", "data": ohlc_data, "total": len(ohlc_data)}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.exception("OHLCV fetch failed")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ───────────────────────────────────────────────────────────────────
-#  MARKET-WIDE ENDPOINTS
-# ───────────────────────────────────────────────────────────────────
-
-@app.get("/api/movers")
-def get_market_movers(
-    market: str = "stocks-usa",
-    category: str = "gainers",
-    limit: int = 25
-):
-    """
-    Get market movers: gainers, losers, most-active, penny-stocks, etc.
-    Markets: stocks-usa, stocks-india, stocks-uk, crypto, forex, futures, bonds
-    Categories: gainers, losers, most-active, penny-stocks, pre-market-gainers, etc.
-    """
-    try:
-        response = movers_scraper.scrape(
-            market=market,
-            category=category,
-            limit=limit
-        )
-        if response.get("status") == "success":
-            return response
-        raise HTTPException(status_code=404, detail=response.get("error", "No data"))
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/screener")
-def screen_market(
-    market: str = "america",
-    sort_by: str = "volume",
-    sort_order: str = "desc",
-    limit: int = 25,
-    min_price: Optional[float] = None,
-    max_price: Optional[float] = None,
-    min_volume: Optional[float] = None,
-    min_change: Optional[float] = None,
-    max_change: Optional[float] = None,
-    min_market_cap: Optional[float] = None,
-):
-    """
-    Screen stocks/crypto/forex with custom filters.
-    Markets: america, india, uk, crypto, forex, global, etc.
-    """
-    filters = []
-    if min_price is not None:
-        filters.append({"left": "close", "operation": "egreater", "right": min_price})
-    if max_price is not None:
-        filters.append({"left": "close", "operation": "eless", "right": max_price})
-    if min_volume is not None:
-        filters.append({"left": "volume", "operation": "egreater", "right": min_volume})
-    if min_change is not None:
-        filters.append({"left": "change", "operation": "egreater", "right": min_change})
-    if max_change is not None:
-        filters.append({"left": "change", "operation": "eless", "right": max_change})
-    if min_market_cap is not None:
-        filters.append({"left": "market_cap_basic", "operation": "egreater", "right": min_market_cap})
-
-    try:
-        response = screener_scraper.screen(
-            market=market,
-            filters=filters if filters else None,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            limit=limit
-        )
-        if response.get("status") == "success":
-            return response
-        raise HTTPException(status_code=404, detail=response.get("error", "No data"))
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ───────────────────────────────────────────────────────────────────
-#  DOWNLOAD HELPERS
-# ───────────────────────────────────────────────────────────────────
-
-def _dict_to_csv_stream(data: dict, filename: str) -> StreamingResponse:
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Field", "Value"])
-    for k, v in data.items():
-        if isinstance(v, (dict, list)):
-            v = json.dumps(v)
-        writer.writerow([k, v])
-    output.seek(0)
-    return StreamingResponse(
-        output,
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-def _list_to_csv_stream(data: list, filename: str) -> StreamingResponse:
-    output = io.StringIO()
-    if data:
-        keys = list(data[0].keys())
-        writer = csv.DictWriter(output, fieldnames=keys)
-        writer.writeheader()
-        for row in data:
-            writer.writerow({k: (json.dumps(v) if isinstance(v, (dict, list)) else v) for k, v in row.items()})
-    output.seek(0)
-    return StreamingResponse(
-        output,
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-def _to_json_stream(data, filename: str) -> StreamingResponse:
-    content = json.dumps(data, indent=2, default=str)
-    return StreamingResponse(
-        io.BytesIO(content.encode()),
-        media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-# ───────────────────────────────────────────────────────────────────
-#  DOWNLOAD ENDPOINTS
-# ───────────────────────────────────────────────────────────────────
-
-@app.get("/api/download/overview/{exchange}/{ticker}")
-def download_overview(exchange: str, ticker: str, fmt: str = "csv"):
-    symbol = f"{exchange.upper()}:{ticker.upper()}"
-    response = overview_scraper.get_symbol_overview(symbol=symbol)
-    if response.get("status") != "success":
-        raise HTTPException(status_code=404, detail="No data")
-    fname = f"{exchange}_{ticker}_overview"
-    if fmt == "json":
-        return _to_json_stream(response["data"], f"{fname}.json")
-    return _dict_to_csv_stream(response["data"], f"{fname}.csv")
-
-
-@app.get("/api/download/indicators/{exchange}/{ticker}")
-def download_indicators(exchange: str, ticker: str, fmt: str = "csv"):
-    response = indicators_scraper.scrape(
-        exchange=exchange.upper(), symbol=ticker.upper(),
-        timeframe="1d", allIndicators=True
-    )
-    if response.get("status") != "success":
-        raise HTTPException(status_code=404, detail="No data")
-    fname = f"{exchange}_{ticker}_indicators"
-    if fmt == "json":
-        return _to_json_stream(response["data"], f"{fname}.json")
-    return _dict_to_csv_stream(response["data"], f"{fname}.csv")
-
-
-@app.get("/api/download/fundamentals/{exchange}/{ticker}")
-def download_fundamentals(exchange: str, ticker: str, fmt: str = "csv"):
-    symbol = f"{exchange.upper()}:{ticker.upper()}"
-    response = fundamentals_scraper.get_fundamentals(symbol=symbol)
-    if response.get("status") != "success":
-        raise HTTPException(status_code=404, detail="No data")
-    fname = f"{exchange}_{ticker}_fundamentals"
-    if fmt == "json":
-        return _to_json_stream(response["data"], f"{fname}.json")
-    return _dict_to_csv_stream(response["data"], f"{fname}.csv")
-
-
-@app.get("/api/download/ohlcv/{exchange}/{ticker}")
-def download_ohlcv(
-    exchange: str, ticker: str,
-    timeframe: str = "1d", candles: int = 100, fmt: str = "csv"
-):
-    try:
-        from tradingview_scraper.symbols.stream import Streamer
-        streamer = Streamer(export_result=True, export_type='json')
-        result = streamer.stream(
-            exchange=exchange.upper(), symbol=ticker.upper(),
-            timeframe=timeframe, numb_price_candles=candles
-        )
-        ohlc_data = result.get("ohlc", [])
-        if not ohlc_data:
-            raise HTTPException(status_code=404, detail="No OHLCV data")
-        fname = f"{exchange}_{ticker}_{timeframe}_ohlcv"
-        if fmt == "json":
-            return _to_json_stream(ohlc_data, f"{fname}.json")
-        return _list_to_csv_stream(ohlc_data, f"{fname}.csv")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/download/movers")
-def download_movers(
-    market: str = "stocks-usa", category: str = "gainers",
-    limit: int = 50, fmt: str = "csv"
-):
-    response = movers_scraper.scrape(market=market, category=category, limit=limit)
-    if response.get("status") != "success":
-        raise HTTPException(status_code=404, detail="No data")
-    fname = f"{market}_{category}_movers"
-    if fmt == "json":
-        return _to_json_stream(response["data"], f"{fname}.json")
-    return _list_to_csv_stream(response["data"], f"{fname}.csv")
-
-
-@app.get("/api/download/screener")
-def download_screener(
-    market: str = "america", sort_by: str = "volume",
-    sort_order: str = "desc", limit: int = 50, fmt: str = "csv"
-):
-    response = screener_scraper.screen(
-        market=market, sort_by=sort_by, sort_order=sort_order, limit=limit
-    )
-    if response.get("status") != "success":
-        raise HTTPException(status_code=404, detail="No data")
-    fname = f"{market}_screener"
-    if fmt == "json":
-        return _to_json_stream(response["data"], f"{fname}.json")
-    return _list_to_csv_stream(response["data"], f"{fname}.csv")
+app = create_app()

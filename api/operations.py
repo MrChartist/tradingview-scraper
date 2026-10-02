@@ -1,0 +1,580 @@
+"""Operations: every capability, written once.
+
+REST (`api/v1.py`) and the WebSocket (`api/socket.py`) both call `execute()`, so a
+capability behaves identically on either transport. To add a capability, write a
+function and decorate it with `@operation(...)`; it is then reachable as
+`op: "<name>"` on the socket (see docs/EXTENDING.md). Handlers are plain blocking
+functions: transports run them in a worker thread.
+"""
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Literal, Optional, Type, Union
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from typing_extensions import Annotated
+
+from api import backtest as bt
+from api import markets_india as india
+from api import services as svc
+from api.config import ClientPolicy, Settings
+from api.errors import ApiError
+from api.glossary import CATALOG, FIELD_TERMS, GLOSSARY
+from api.live import valid_symbol
+from api.providers import NotSupported, registry
+from api.version import VERSION
+
+
+@dataclass
+class Result:
+    data: Any
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Context:
+    """What an operation may use. `auto_resolve` lets callers pass plain names like "reliance"."""
+    settings: Settings
+    hub: Any = None
+    auto_resolve: bool = False
+    policy: Optional[ClientPolicy] = None       # what this client may do; None = everything
+    owner: str = "open"                         # who is asking (the key's name); paper tests belong to their owner
+    paper: Any = None                           # the PaperBook, when paper tests are switched on
+
+    @property
+    def max_symbols(self) -> int:
+        cap = self.policy.max_symbols if self.policy else None
+        return min(cap, 100) if cap else 100
+
+
+@dataclass(frozen=True)
+class Operation:
+    name: str
+    summary: str
+    model: Type[BaseModel]
+    fn: Callable[[BaseModel, Context], Result]
+    public: bool = False          # no API key needed
+
+
+REGISTRY: Dict[str, Operation] = {}
+
+
+def operation(name: str, summary: str, model: Type[BaseModel], public: bool = False):
+    def register(fn: Callable[[BaseModel, Context], Result]):
+        if name in REGISTRY:
+            raise ValueError(f"Operation '{name}' is already registered")
+        REGISTRY[name] = Operation(name, summary, model, fn, public)
+        return fn
+    return register
+
+
+def execute(name: str, params: Optional[dict], ctx: Context) -> Result:
+    """Validate params and run one operation. Raises ApiError for anything the caller can fix."""
+    op = REGISTRY.get(name)
+    if op is None:
+        raise ApiError(400, f"Unknown operation '{name}'.", code="unknown_operation",
+                       hint="Available operations: " + ", ".join(sorted(REGISTRY)) + ".")
+    if ctx.policy is not None and not op.public and not ctx.policy.allows_operation(name):
+        allowed = ", ".join(sorted(ctx.policy.operations or []))
+        raise ApiError(403, f"The key for '{ctx.policy.name}' is not allowed to use '{name}'.", code="forbidden",
+                       hint=f"This key may use: {allowed}. Ask the owner of the server to widen it.")
+    try:
+        parsed = op.model.model_validate(params or {})
+    except ValidationError as e:
+        first = e.errors()[0]
+        where = ".".join(str(p) for p in first.get("loc", []))
+        raise ApiError(422, f"{where}: {first.get('msg', 'invalid value')}".strip(": "),
+                       code="validation_error", hint=f"Parameters for '{name}': {', '.join(op.model.model_fields) or 'none'}.")
+    try:
+        return op.fn(parsed, ctx)
+    except svc.HTTPException as e:       # the data layer speaks HTTP; callers here speak ApiError
+        raise ApiError(e.status_code, e.detail if isinstance(e.detail, str) else "Request failed")
+
+
+def describe(policy: Optional[ClientPolicy] = None) -> List[dict]:
+    """Every operation (or, with a policy, only the ones that client may use)."""
+    return [{"name": o.name, "summary": o.summary, "public": o.public, "params": list(o.model.model_fields)}
+            for o in sorted(REGISTRY.values(), key=lambda o: o.name)
+            if policy is None or o.public or policy.allows_operation(o.name)]
+
+
+def _ask(used: List[str], capability: str, *args, exchange: Optional[str] = None):
+    """Ask the enabled data sources in order; remember which one answered (for meta.source)."""
+    name, value = registry.call(capability, *args, exchange=exchange)
+    used.append(name)
+    return value
+
+
+# ── shared parsing ─────────────────────────────────────────────────
+def as_list(value: Union[str, List[str], None]) -> List[str]:
+    if value is None:
+        return []
+    items = value.split(",") if isinstance(value, str) else value
+    return [str(s).strip() for s in items if str(s).strip()]
+
+
+def resolve_name(text: str, ctx: Context) -> str:
+    """'reliance' -> 'NSE:RELIANCE' when the caller allows it; qualified symbols pass through."""
+    text = text.strip()
+    if ":" in text:
+        ex, tk = text.upper().split(":", 1)
+        return f"{ex}:{svc.clean_ticker(ex, tk)}"
+    if not ctx.auto_resolve:
+        raise ApiError(400, f"Invalid symbol format: {text.upper()}. Use EXCHANGE:TICKER, for example NSE:RELIANCE.",
+                       hint=f"Don't know the code? GET /v1/symbols/resolve?q={text.lower().replace(' ', '%20')} finds the best match.")
+    try:
+        result = svc.resolve_symbol(text, ctx.settings.default_country)
+    except Exception:
+        raise ApiError(502, "Symbol search is unavailable right now.")
+    if not result["best"]:
+        raise ApiError(404, f"Nothing matched '{text}'.", hint="Try a shorter or different spelling, for example the company's short name.")
+    return result["best"]["full_symbol"]
+
+
+def symbol_list(raw, ctx: Context, limit: int) -> List[str]:
+    items = as_list(raw)
+    if not items:
+        raise ApiError(400, "Pass at least one symbol, for example symbols=NSE:RELIANCE,NASDAQ:AAPL.",
+                       hint="Don't know the code? Use the 'resolve' operation (GET /v1/symbols/resolve?q=reliance).")
+    if len(items) > limit:
+        raise ApiError(400, f"At most {limit} symbols per request.", hint="Split the list into several requests.")
+    plain = [s for s in items if ":" not in s]
+    if len(plain) > 1 and ctx.auto_resolve:      # look names up side by side, not one after another
+        with ThreadPoolExecutor(max_workers=min(len(plain), 8)) as pool:
+            resolved = dict(zip(plain, pool.map(lambda s: resolve_name(s, ctx), plain)))
+    else:
+        resolved = {}
+    symbols = list(dict.fromkeys(resolved.get(s) or resolve_name(s, ctx) for s in items))
+    bad = [s for s in symbols if not valid_symbol(s)]
+    if bad:
+        raise ApiError(400, f"Invalid symbol format: {', '.join(bad[:5])}. Use EXCHANGE:TICKER, for example NSE:RELIANCE.",
+                       hint="Don't know the code? GET /v1/symbols/resolve?q=" + bad[0].lower().replace(" ", "%20") + " finds the best match.")
+    return symbols
+
+
+def split_symbol(raw: str, ctx: Context):
+    exchange, ticker = resolve_name(raw, ctx).split(":", 1)
+    return exchange, ticker
+
+
+def parse_when(value: Optional[str], default: int) -> int:
+    """Accept epoch seconds or an ISO date (YYYY-MM-DD)."""
+    if value is None or value == "":
+        return default
+    try:
+        text = str(value)
+        if text.isdigit():
+            return int(text)
+        return int(datetime.fromisoformat(text).replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        raise ApiError(400, f"Invalid date '{value}'. Use YYYY-MM-DD or epoch seconds.", hint="Example: from=2026-10-01&to=2026-10-14")
+
+
+# ── parameter models ───────────────────────────────────────────────
+class _Params(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+Params = _Params      # base class for plugin parameter models
+
+
+class NoParams(_Params):
+    pass
+
+
+class SearchParams(_Params):
+    q: str = Field(..., min_length=1, max_length=40, description="Part of a name or ticker")
+    limit: int = Field(10, ge=1, le=30)
+
+
+class ResolveParams(_Params):
+    q: str = Field(..., min_length=1, max_length=60, description="A company, ticker or coin name")
+    country: Optional[str] = Field(None, min_length=2, max_length=2, description="Two-letter country to prefer on ties, e.g. IN")
+
+
+class QuotesParams(_Params):
+    symbols: Union[str, List[str]] = Field(..., description="List or comma separated, e.g. ['NSE:RELIANCE', 'bitcoin']")
+
+
+class SymbolParams(_Params):
+    symbol: str = Field(..., min_length=1, max_length=60, description="EXCHANGE:TICKER (or, on the socket, a plain name)")
+
+
+class TechnicalsParams(SymbolParams):
+    timeframe: str = "1d"
+
+
+class CandlesParams(SymbolParams):
+    timeframe: str = "1d"
+    limit: int = Field(100, ge=1, le=5000)
+
+
+class NewsParams(SymbolParams):
+    limit: int = Field(20, ge=1, le=100)
+    language: str = Field("en", min_length=2, max_length=5)
+
+
+class CorporateActionsParams(SymbolParams):
+    from_: Optional[str] = Field(None, alias="from", description="YYYY-MM-DD. Default: one year ago.")
+    to: Optional[str] = Field(None, description="YYYY-MM-DD. Default: today.")
+
+
+class BreadthParams(_Params):
+    market: Literal["india"] = "india"
+    date: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="YYYY-MM-DD. Default: the latest trading day.")
+
+
+class MoversParams(_Params):
+    market: str = "stocks-india"
+    category: str = "gainers"
+    limit: int = Field(25, ge=1, le=100)
+
+
+OPERATORS = {"gt": "greater", "gte": "egreater", "lt": "less", "lte": "eless",
+             "eq": "equal", "neq": "nequal", "in": "in_range", "between": "in_range"}
+FIELD_PATTERN = r"^[A-Za-z0-9_.]{1,60}$"
+
+
+class Condition(_Params):
+    field: str = Field(..., pattern=FIELD_PATTERN, examples=["market_cap_basic"])
+    op: Literal["gt", "gte", "lt", "lte", "eq", "neq", "in", "between"]
+    value: Any = Field(..., description="A number or string; a list for 'in' and [low, high] for 'between'.")
+
+
+class ScreenerParams(_Params):
+    market: str = Field("india", examples=["india", "america", "crypto"])
+    conditions: List[Condition] = Field(default_factory=list, max_length=20)
+    columns: Optional[List[Annotated[str, StringConstraints(pattern=FIELD_PATTERN)]]] = Field(
+        None, max_length=30, description="Fields to return. Defaults to a standard set.")
+    sort_by: str = Field("volume", pattern=FIELD_PATTERN)
+    sort_order: Literal["asc", "desc"] = "desc"
+    limit: int = Field(25, ge=1, le=200)
+    main_only: bool = Field(True, description="Restrict to the market's main exchange (for example NSE for India).")
+
+
+class CalendarParams(_Params):
+    markets: Union[str, List[str]] = Field("india", description="india, america, uk, ...")
+    from_: Optional[str] = Field(None, alias="from", description="YYYY-MM-DD or epoch seconds. Default: today.")
+    to: Optional[str] = Field(None, description="YYYY-MM-DD or epoch seconds. Default: 7 days ahead.")
+    limit: int = Field(100, ge=1, le=500)
+
+
+# ── operations ─────────────────────────────────────────────────────
+@operation("ping", "Check the connection. Returns the server time.", NoParams, public=True)
+def op_ping(p, ctx):
+    return Result({"time": int(time.time())})
+
+
+@operation("status", "Service version, live-feed health and limits.", NoParams)
+def op_status(p, ctx):
+    s = ctx.settings
+    return Result({
+        "client": ctx.policy.name if ctx.policy else None,
+        "live": ctx.hub.stats() if ctx.hub else None,
+        "auth": "api_key" if s.auth_enabled else "open",
+        "rate_limit_per_minute": s.rate_limit_per_minute,
+        "cache_entries": len(svc._CACHE),
+        "sources": registry.describe(),
+    })
+
+
+@operation("schema", "JSON Schema for every operation's parameters, for generating or checking clients.", NoParams, public=True)
+def op_schema(p, ctx):
+    from api.contract import build_schema
+    return Result(build_schema(VERSION))
+
+
+@operation("markets", "What you can ask for: markets, categories, timeframes, filter fields.", NoParams, public=True)
+def op_markets(p, ctx):
+    return Result(CATALOG)
+
+
+@operation("glossary", "Plain-language meaning of every market term.", NoParams, public=True)
+def op_glossary(p, ctx):
+    return Result({"terms": GLOSSARY, "field_terms": FIELD_TERMS})
+
+
+@operation("resolve", "Turn a name like 'reliance' or 'apple' into the right EXCHANGE:TICKER.", ResolveParams)
+def op_resolve(p, ctx):
+    try:
+        result = svc.resolve_symbol(p.q, p.country or ctx.settings.default_country)
+    except Exception:
+        raise ApiError(502, "Symbol search is unavailable right now.")
+    if not result["best"]:
+        raise ApiError(404, f"Nothing matched '{p.q}'.", hint="Try a shorter or different spelling, for example the company's short name.")
+    return Result(result, {"matched": 1 + len(result["alternatives"])})
+
+
+@operation("search", "Find symbols by name or ticker.", SearchParams)
+def op_search(p, ctx):
+    try:
+        source, results = registry.call("search", p.q)
+    except ApiError:
+        raise
+    except Exception:
+        raise ApiError(502, "Symbol search is unavailable right now.")
+    return Result(results[:p.limit], {"count": len(results[:p.limit]), "source": source})
+
+
+@operation("quotes", "Latest quote for up to 100 symbols (snapshot).", QuotesParams)
+def op_quotes(p, ctx):
+    wanted = symbol_list(p.symbols, ctx, ctx.max_symbols)
+    try:
+        found, missing, sources = registry.quotes(wanted)
+    except (ApiError, svc.HTTPException):
+        raise
+    except Exception as e:
+        svc.logger.warning("Snapshot failed: %s", e)
+        raise ApiError(502, "Upstream market data is unavailable right now.")
+    return Result(found, {"count": len(found), "not_found": missing, "sources": sources})
+
+
+@operation("symbol", "Profile and key statistics, in the listing currency.", SymbolParams)
+def op_symbol(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "overview", exchange, ticker, exchange=exchange), "Symbol not found or data unavailable.")
+    return Result(r["data"], {"currency": r["data"].get("currency"), "source": used[0]})
+
+
+@operation("fundamentals", "Company fundamentals, in the listing currency.", SymbolParams)
+def op_fundamentals(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "fundamentals", exchange, ticker, exchange=exchange), "Fundamental data not found.")
+    return Result(r["data"], {"currency": r["data"].get("currency"), "source": used[0]})
+
+
+@operation("technicals", "Technical indicator values (advanced).", TechnicalsParams)
+def op_technicals(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "technicals", exchange, ticker, p.timeframe, exchange=exchange), "Indicators not found.")
+    return Result(r["data"], {"timeframe": p.timeframe, "source": used[0]})
+
+
+@operation("candles", "Historical OHLCV candles, oldest first (time = epoch seconds, UTC).", CandlesParams)
+def op_candles(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
+    try:
+        raw = _ask(used, "candles", exchange, ticker, p.timeframe, max(p.limit, 5), exchange=exchange)
+    except (ApiError, svc.HTTPException):
+        raise
+    except Exception as e:
+        svc.logger.warning("Candles failed: %s", e)
+        raise ApiError(502, "Could not fetch candles from upstream.")
+    if not raw:
+        raise ApiError(404, "No candles returned. Check the exchange, ticker and timeframe.")
+    out = [{"time": int(c["timestamp"]),
+            "datetime": datetime.fromtimestamp(c["timestamp"], timezone.utc).isoformat(),
+            "open": c["open"], "high": c["high"], "low": c["low"], "close": c["close"],
+            "volume": c.get("volume")} for c in raw[-p.limit:]]
+    return Result(out, {"count": len(out), "timeframe": p.timeframe, "source": used[0]})
+
+
+@operation("news", "Latest headlines for a symbol.", NewsParams)
+def op_news(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    used: List[str] = []
+    try:
+        items = _ask(used, "news", exchange, ticker, p.limit, p.language, exchange=exchange)
+    except (ApiError, svc.HTTPException):
+        raise
+    except Exception as e:
+        svc.logger.warning("News failed: %s", e)
+        raise ApiError(502, "News is unavailable right now.")
+    return Result(items, {"count": len(items), "source": used[0]})
+
+
+@operation("corporate_actions", "Dividends, splits and bonus issues for an Indian stock (needs the 'nse' data source).", CorporateActionsParams)
+def op_corporate_actions(p, ctx):
+    exchange, ticker = split_symbol(p.symbol, ctx)
+    today = india.now_ist().date()
+    start = p.from_ or (today - timedelta(days=365)).isoformat()
+    end = p.to or today.isoformat()
+    used: List[str] = []
+    try:
+        rows = _ask(used, "corporate_actions", exchange, ticker, start, end, exchange=exchange)
+    except (ApiError, svc.HTTPException):
+        raise
+    except NotSupported:
+        raise ApiError(404, f"No corporate actions found for {exchange}:{ticker}.", hint="Check the symbol, or widen the dates.")
+    except Exception as e:
+        svc.logger.warning("Corporate actions failed: %s", e)
+        raise ApiError(502, "Corporate actions are unavailable right now.")
+    return Result(rows, {"count": len(rows), "from": start, "to": end, "source": used[0]})
+
+
+@operation("market_breadth", "How many stocks rose, fell or stayed flat on a day (India; needs the 'nse' data source).", BreadthParams)
+def op_market_breadth(p, ctx):
+    used: List[str] = []
+    try:
+        data = _ask(used, "market_breadth", "NSE", p.date, exchange="NSE")
+    except (ApiError, svc.HTTPException):
+        raise
+    except NotSupported:
+        raise ApiError(404, "No market breadth for that date.", hint="Markets are closed on weekends and holidays; try another date.")
+    except Exception as e:
+        svc.logger.warning("Market breadth failed: %s", e)
+        raise ApiError(502, "Market breadth is unavailable right now.")
+    return Result(data, {"source": used[0]})
+
+
+@operation("movers", "Gainers, losers, most active (liquid, main-exchange listings only).", MoversParams)
+def op_movers(p, ctx):
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "movers", p.market, p.category, p.limit), "No data.")
+    return Result(r["data"], {"count": len(r["data"]), "market": p.market, "category": p.category, "source": used[0]})
+
+
+@operation("screener", "Screen a market with your own conditions.", ScreenerParams)
+def op_screener(p, ctx):
+    filters = [{"left": c.field, "operation": OPERATORS[c.op], "right": c.value} for c in p.conditions]
+    if p.main_only and p.market in svc.MAIN_EXCHANGES:
+        filters.append({"left": "exchange", "operation": "in_range", "right": svc.MAIN_EXCHANGES[p.market]})
+    columns = p.columns or (svc.STOCK_SCREENER_COLUMNS if p.market in svc.STOCK_SCREENER_MARKETS else None)
+    used: List[str] = []
+    r = svc.run_scraper(lambda: _ask(used, "screener", p.market, filters, columns, p.sort_by, p.sort_order, p.limit), "No data.")
+    return Result(r["data"], {"count": len(r["data"]), "total_matches": r.get("totalCount"), "market": p.market, "source": used[0]})
+
+
+def _calendar(kind: str, p: CalendarParams) -> Result:
+    now = int(time.time())
+    day = now - now % 86400
+    start, end = parse_when(p.from_, day), parse_when(p.to, day + 7 * 86400)
+    if end < start:
+        raise ApiError(400, "'to' must not be before 'from'.")
+    used: List[str] = []
+    try:
+        rows = _ask(used, "calendar", kind, as_list(p.markets), start, end, p.limit)
+    except (ApiError, svc.HTTPException):
+        raise
+    except Exception as e:
+        svc.logger.warning("Calendar failed: %s", e)
+        raise ApiError(502, "Calendar data is unavailable right now.")
+    return Result(rows, {"count": len(rows), "source": used[0], "note": "Monetary values are in fundamental_currency_code (usually USD)."})
+
+
+# ── backtest and paper forward-test ────────────────────────────────
+class BacktestParams(SymbolParams):
+    timeframe: str = "1d"
+    strategy: Literal["breakout", "retest", "orb", "candle"] = "breakout"
+    settings: Dict[str, Union[int, float, str]] = Field(default_factory=dict, description="Strategy settings; see the 'strategies' list in the reply of the 'markets' operation or docs/BACKTEST.md.")
+    limit: int = Field(750, ge=50, le=5000, description="How many candles of history to test on.")
+    rr: float = Field(2.0, gt=0.2, le=10, description="Target distance as a multiple of the risk (stop distance).")
+    cost_pct: float = Field(0.1, ge=0, le=5, description="Round-trip cost per trade in percent (brokerage, taxes, slippage).")
+    max_hold: int = Field(30, ge=1, le=500, description="Exit at the close after this many candles if neither stop nor target was hit.")
+    show_trades: int = Field(100, ge=0, le=500, description="How many of the most recent trades to return.")
+
+
+class PaperStartParams(SymbolParams):
+    timeframe: str = "1d"
+    strategy: Literal["breakout", "retest", "orb", "candle"] = "breakout"
+    settings: Dict[str, Union[int, float, str]] = Field(default_factory=dict)
+    rr: float = Field(2.0, gt=0.2, le=10)
+    cost_pct: float = Field(0.1, ge=0, le=5)
+    max_hold: int = Field(30, ge=1, le=500)
+
+
+class PaperIdParams(_Params):
+    id: str = Field(..., min_length=4, max_length=32)
+
+
+class PaperStopParams(PaperIdParams):
+    delete: bool = False
+
+
+class PaperListParams(_Params):
+    pass
+
+
+def _strategy_check(strategy: str, timeframe: str, settings: dict) -> dict:
+    svc.check_timeframe(timeframe)
+    if bt.STRATEGIES[strategy]["intraday_only"] and bt.TIMEFRAME_SECONDS[timeframe] >= 86400:
+        raise ApiError(400, f"'{strategy}' needs an intraday timeframe such as 5m or 15m.",
+                       hint="Opening range breakout reads the first minutes of each trading day.")
+    try:
+        return bt.merged_params(strategy, settings)
+    except ValueError as e:
+        raise ApiError(422, str(e))
+
+
+def _candle_rows(symbol: str, timeframe: str, limit: int, ctx: Context) -> List[dict]:
+    return op_candles(CandlesParams(symbol=symbol, timeframe=timeframe, limit=limit), ctx).data
+
+
+def paper_fetcher(settings: Settings):
+    """What the background loop uses to get candles (plain names are not needed: runs store EXCHANGE:TICKER)."""
+    ctx = Context(settings=settings, auto_resolve=False)
+    return lambda symbol, timeframe, limit: _candle_rows(symbol, timeframe, limit, ctx)
+
+
+@operation("backtest", "Test a price-action strategy on past candles: trades, win rate, drawdown. Nothing is traded.", BacktestParams)
+def op_backtest(p, ctx):
+    params = _strategy_check(p.strategy, p.timeframe, p.settings)
+    symbol = resolve_name(p.symbol, ctx)
+    tf = bt.TIMEFRAME_SECONDS[p.timeframe]
+    rows = _candle_rows(symbol, p.timeframe, p.limit, ctx)
+    rows, splits = bt.adjust_for_splits(rows)
+    out = bt.run_backtest(rows, p.strategy, params, rr=p.rr, cost_pct=p.cost_pct, max_hold=p.max_hold, tf_seconds=tf)
+    trades = out["trades"][-p.show_trades:] if p.show_trades else []
+    caution = []
+    if out["stats"]["trades"] < 30:
+        caution.append("Fewer than 30 trades: too few to trust. Test more candles or other symbols.")
+    if splits:
+        caution.append("Older prices were scaled for "+", ".join(f"a {e['ratio']} split/bonus" for e in splits)+
+                       " because this source gives prices as traded. Check it against your chart.")
+    caution.append("Past results do not predict future results. Paper test only; no orders are placed.")
+    return Result({"symbol": symbol, "timeframe": p.timeframe, "strategy": p.strategy, "settings": out["params"],
+                   "rr": p.rr, "cost_pct": p.cost_pct, "candles_tested": len(rows),
+                   "from": rows[0]["datetime"], "to": rows[-1]["datetime"], "stats": out["stats"], "trades": trades,
+                   "open_position": out["open_position"], "waiting_to_enter": out["pending_signal"],
+                   "adjusted_for": splits},
+                  {"count": len(trades), "caution": caution})
+
+
+def _book(ctx: Context):
+    if ctx.paper is None:
+        raise ApiError(501, "Paper tests are switched off on this server.",
+                       hint="The owner can switch them on by setting PAPER_POLL_SECONDS to 30 or more.")
+    return ctx.paper
+
+
+@operation("paper_start", "Start a paper test that keeps running on new candles and records pretend trades.", PaperStartParams)
+def op_paper_start(p, ctx):
+    book = _book(ctx)
+    params = _strategy_check(p.strategy, p.timeframe, p.settings)
+    symbol = resolve_name(p.symbol, ctx)
+    _candle_rows(symbol, p.timeframe, 60, ctx)         # fail now if the symbol has no data
+    run = book.start(ctx.owner, symbol, p.timeframe, p.strategy, params, rr=p.rr, cost_pct=p.cost_pct, max_hold=p.max_hold)
+    return Result(run, {"poll_seconds": ctx.settings.paper_poll_seconds,
+                        "note": "It starts from the next closed candle and checks every poll. Read it with paper_get."})
+
+
+@operation("paper_list", "Your paper tests with their running totals.", PaperListParams)
+def op_paper_list(p, ctx):
+    runs = _book(ctx).list(ctx.owner)
+    return Result(runs, {"count": len(runs)})
+
+
+@operation("paper_get", "One paper test: totals, open position and recent trades.", PaperIdParams)
+def op_paper_get(p, ctx):
+    book = _book(ctx)
+    return Result(book.view(book.get(ctx.owner, p.id)), {})
+
+
+@operation("paper_stop", "Stop a paper test (delete=true also removes it).", PaperStopParams)
+def op_paper_stop(p, ctx):
+    return Result(_book(ctx).stop(ctx.owner, p.id, p.delete), {})
+
+
+@operation("earnings", "Upcoming and recent earnings announcements.", CalendarParams)
+def op_earnings(p, ctx):
+    return _calendar("earnings", p)
+
+
+@operation("dividends", "Upcoming and recent dividends.", CalendarParams)
+def op_dividends(p, ctx):
+    return _calendar("dividends", p)

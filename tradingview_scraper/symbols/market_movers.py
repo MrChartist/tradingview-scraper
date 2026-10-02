@@ -55,6 +55,9 @@ class MarketMovers:
         'after-hours-losers',
     ]
 
+    # Categories available for crypto, forex, futures and bonds
+    OTHER_CATEGORIES = ['gainers', 'losers', 'most-active']
+
     # Default fields to fetch
     DEFAULT_FIELDS = [
         'name',
@@ -67,6 +70,7 @@ class MarketMovers:
         'earnings_per_share_basic_ttm',
         'logoid',
         'description',
+        'currency',
     ]
 
     def __init__(self, export_result: bool = False, export_type: str = 'json'):
@@ -108,10 +112,22 @@ class MarketMovers:
         Raises:
             ValueError: If the category is not supported.
         """
-        if market.startswith('stocks') and category not in self.STOCK_CATEGORIES:
+        if self._extended_session(category) and market != 'stocks-usa':
             raise ValueError(
-                f"Unsupported category: {category}. "
-                f"Supported categories for stocks: {', '.join(self.STOCK_CATEGORIES)}"
+                f"Category '{category}' is only available for stocks-usa "
+                "(no reliable extended-hours data for other markets)."
+            )
+        if market.startswith('stocks'):
+            if category not in self.STOCK_CATEGORIES:
+                raise ValueError(
+                    f"Unsupported category: {category}. "
+                    f"Supported categories for stocks: {', '.join(self.STOCK_CATEGORIES)}"
+                )
+            return
+        if category not in self.OTHER_CATEGORIES:
+            raise ValueError(
+                f"Unsupported category for {market}: {category}. "
+                f"Supported categories: {', '.join(self.OTHER_CATEGORIES)}"
             )
 
     def _build_scanner_payload(
@@ -143,7 +159,7 @@ class MarketMovers:
         sort_config = self._get_sort_config(category)
 
         payload = {
-            "columns": fields,
+            "columns": self._resolve_columns(category, fields),
             "filter": filter_conditions,
             "options": {
                 "lang": "en"
@@ -153,6 +169,80 @@ class MarketMovers:
         }
 
         return payload
+
+    # Scanner region used for each market (one scanner endpoint per country).
+    SCANNER_REGIONS = {
+        'stocks-usa': 'america',
+        'stocks-uk': 'uk',
+        'stocks-india': 'india',
+        'stocks-australia': 'australia',
+        'stocks-canada': 'canada',
+        'crypto': 'crypto',
+        'forex': 'forex',
+        'bonds': 'bonds',
+        'futures': 'futures',
+    }
+
+    # Main exchanges per stock market. Keeps out OTC / illiquid listings and
+    # duplicate cross-listings (e.g. NSE + BSE) that otherwise flood the lists.
+    MAIN_EXCHANGES = {
+        'stocks-usa': ['NASDAQ', 'NYSE', 'AMEX'],
+        'stocks-uk': ['LSE'],
+        'stocks-india': ['NSE'],
+        'stocks-australia': ['ASX'],
+        'stocks-canada': ['TSX'],
+        'crypto': ['BINANCE', 'COINBASE', 'BYBIT', 'KRAKEN', 'OKX'],
+    }
+
+    # Minimum traded volume (shares / units) so results are actually tradable.
+    MIN_VOLUME = {
+        'stocks-usa': 100000,
+        'stocks-uk': 100000,
+        'stocks-india': 100000,
+        'stocks-australia': 100000,
+        'stocks-canada': 100000,
+        'crypto': 1000000,
+    }
+
+    # Upper price bound for the "penny-stocks" category, in local currency.
+    PENNY_PRICE = {
+        'stocks-usa': 5,
+        'stocks-india': 20,
+        'stocks-uk': 100,
+        'stocks-australia': 1,
+        'stocks-canada': 5,
+    }
+
+    # Extended-hours categories read from dedicated scanner columns.
+    EXTENDED_COLUMNS = {
+        'pre-market': {
+            'close': 'premarket_close',
+            'change': 'premarket_change',
+            'change_abs': 'premarket_change_abs',
+            'volume': 'premarket_volume',
+        },
+        'after-hours': {
+            'close': 'postmarket_close',
+            'change': 'postmarket_change',
+            'change_abs': 'postmarket_change_abs',
+            'volume': 'postmarket_volume',
+        },
+    }
+
+    @staticmethod
+    def _extended_session(category: str) -> Optional[str]:
+        """Return 'pre-market' / 'after-hours' for extended-hours categories."""
+        if category.startswith('pre-market'):
+            return 'pre-market'
+        if category.startswith('after-hours'):
+            return 'after-hours'
+        return None
+
+    def _resolve_columns(self, category: str, fields: List[str]) -> List[str]:
+        """Map output field names to the scanner columns to request."""
+        session = self._extended_session(category)
+        mapping = self.EXTENDED_COLUMNS.get(session, {})
+        return [mapping.get(f, f) for f in fields]
 
     def _get_filter_conditions(self, market: str, category: str) -> List[Dict]:
         """
@@ -166,58 +256,35 @@ class MarketMovers:
             List[Dict]: Filter conditions for the scanner API.
         """
         filters = []
+        session = self._extended_session(category)
+        columns = self.EXTENDED_COLUMNS.get(session, {})
+        change_col = columns.get('change', 'change')
+        volume_col = columns.get('volume', 'volume')
 
-        # Base market filter
-        if market == 'stocks-usa':
-            filters.append({
-                "left": "market",
-                "operation": "equal",
-                "right": "america"
-            })
-        elif market == 'stocks-uk':
-            filters.append({
-                "left": "market",
-                "operation": "equal",
-                "right": "uk"
-            })
-        elif market == 'stocks-india':
-            filters.append({
-                "left": "market",
-                "operation": "equal",
-                "right": "india"
-            })
-        elif market == 'stocks-australia':
-            filters.append({
-                "left": "market",
-                "operation": "equal",
-                "right": "australia"
-            })
-        elif market == 'stocks-canada':
-            filters.append({
-                "left": "market",
-                "operation": "equal",
-                "right": "canada"
-            })
+        if market.startswith('stocks'):
+            filters.append({"left": "type", "operation": "equal", "right": "stock"})
 
-        # Category-specific filters
+        exchanges = self.MAIN_EXCHANGES.get(market)
+        if exchanges:
+            filters.append({"left": "exchange", "operation": "in_range", "right": exchanges})
+
+        min_volume = self.MIN_VOLUME.get(market)
+        if min_volume:
+            if session:
+                min_volume = 10000  # extended hours trade far thinner
+            filters.append({"left": volume_col, "operation": "greater", "right": min_volume})
+
         if category == 'penny-stocks':
             filters.append({
                 "left": "close",
                 "operation": "less",
-                "right": 5
+                "right": self.PENNY_PRICE.get(market, 5),
             })
-        elif category == 'gainers' or category == 'pre-market-gainers' or category == 'after-hours-gainers':
-            filters.append({
-                "left": "change",
-                "operation": "greater",
-                "right": 0
-            })
-        elif category == 'losers' or category == 'pre-market-losers' or category == 'after-hours-losers':
-            filters.append({
-                "left": "change",
-                "operation": "less",
-                "right": 0
-            })
+            filters.append({"left": "close", "operation": "greater", "right": 0})
+        elif category.endswith('gainers'):
+            filters.append({"left": change_col, "operation": "greater", "right": 0})
+        elif category.endswith('losers'):
+            filters.append({"left": change_col, "operation": "less", "right": 0})
 
         return filters
 
@@ -231,31 +298,17 @@ class MarketMovers:
         Returns:
             Dict: Sort configuration for the scanner API.
         """
-        if category in ['gainers', 'pre-market-gainers', 'after-hours-gainers']:
-            return {
-                "sortBy": "change",
-                "sortOrder": "desc"
-            }
-        elif category in ['losers', 'pre-market-losers', 'after-hours-losers']:
-            return {
-                "sortBy": "change",
-                "sortOrder": "asc"
-            }
-        elif category == 'most-active':
-            return {
-                "sortBy": "volume",
-                "sortOrder": "desc"
-            }
-        elif category == 'penny-stocks':
-            return {
-                "sortBy": "volume",
-                "sortOrder": "desc"
-            }
-        else:
-            return {
-                "sortBy": "change",
-                "sortOrder": "desc"
-            }
+        session = self._extended_session(category)
+        columns = self.EXTENDED_COLUMNS.get(session, {})
+        change_col = columns.get('change', 'change')
+
+        if category.endswith('gainers'):
+            return {"sortBy": change_col, "sortOrder": "desc"}
+        if category.endswith('losers'):
+            return {"sortBy": change_col, "sortOrder": "asc"}
+        if category in ('most-active', 'penny-stocks'):
+            return {"sortBy": "volume", "sortOrder": "desc"}
+        return {"sortBy": change_col, "sortOrder": "desc"}
 
     def _get_scanner_url(self, market: str) -> str:
         """
@@ -267,17 +320,8 @@ class MarketMovers:
         Returns:
             str: The scanner API URL.
         """
-        if market == 'crypto':
-            return "https://scanner.tradingview.com/crypto/scan"
-        elif market == 'forex':
-            return "https://scanner.tradingview.com/forex/scan"
-        elif market == 'bonds':
-            return "https://scanner.tradingview.com/bonds/scan"
-        elif market == 'futures':
-            return "https://scanner.tradingview.com/futures/scan"
-        else:
-            # Default to america for stocks
-            return "https://scanner.tradingview.com/america/scan"
+        region = self.SCANNER_REGIONS.get(market, 'america')
+        return f"https://scanner.tradingview.com/{region}/scan"
 
     def scrape(
         self,

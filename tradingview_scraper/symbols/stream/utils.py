@@ -11,6 +11,7 @@ This module contains functions to:
 
 import logging
 import time
+from urllib.parse import quote
 import requests
 
 
@@ -56,7 +57,7 @@ def validate_symbols(exchange_symbol):
         for attempt in range(retries):
             try:
                 res = requests.get(
-                    validate_url.format(exchange=exchange, symbol=symbol), timeout=5
+                    validate_url.format(exchange=quote(exchange, safe=''), symbol=quote(symbol, safe='')), timeout=5
                 )
                 res.raise_for_status()
             except requests.RequestException as exc:

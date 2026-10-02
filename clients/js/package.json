@@ -1,0 +1,12 @@
+{
+  "name": "tickvale",
+  "version": "1.0.0",
+  "description": "JavaScript/TypeScript client for the Tickvale API. Zero dependencies.",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": { ".": { "types": "./index.d.ts", "default": "./index.js" } },
+  "engines": { "node": ">=18" },
+  "files": ["index.js", "index.d.ts", "README.md"],
+  "license": "UNLICENSED"
+}
