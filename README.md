@@ -1,4 +1,4 @@
-# Open Market Terminal
+# Tickvale
 
 A real-time market data terminal for stocks, crypto and forex. A **FastAPI** backend and a clean, responsive frontend (dark and light themes) sit on top of the `tradingview-scraper` library.
 
@@ -45,6 +45,7 @@ docker compose up -d --build    # or: uvicorn api.main:app --port 8000
 curl -H "X-API-Key: $KEY" "http://localhost:8000/v1/quotes?symbols=NSE:RELIANCE,BINANCE:BTCUSDT"
 ```
 
+* **New to markets?** Read [docs/START_HERE.md](docs/START_HERE.md): five ideas in plain words, copy-paste code and a troubleshooting table.
 * Interactive docs at `/docs`; reference in [docs/API.md](docs/API.md); integration and upgrade path in [docs/INTEGRATION.md](docs/INTEGRATION.md).
 * SDKs: [Python](clients/python/README.md) and [JavaScript/TypeScript](clients/js/README.md), both with retries, typed errors and auto-reconnecting live streams.
 * **Read the terms-of-use and licensing caution in [docs/INTEGRATION.md](docs/INTEGRATION.md#5-read-this-before-going-to-production) before using this in a commercial product.**

@@ -1,7 +1,7 @@
 {
-  "name": "open-market-client",
+  "name": "tickvale",
   "version": "1.0.0",
-  "description": "JavaScript/TypeScript client for the Open Market Terminal API. Zero dependencies.",
+  "description": "JavaScript/TypeScript client for the Tickvale API. Zero dependencies.",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",

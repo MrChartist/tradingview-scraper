@@ -8,8 +8,8 @@ import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "clients", "python"))
 
-from open_market_client import (AuthError, ConnectionFailed, MarketClient, NotFoundError,  # noqa: E402
-                                RateLimitError, UpstreamError)
+from tickvale import (AuthError, ConnectionFailed, MarketClient, NotFoundError,  # noqa: E402
+                                RateLimitError)
 
 
 class FakeResponse:
@@ -99,8 +99,9 @@ def test_screener_body_and_symbol_validation(client):
         client.screener("india", [{"field": "close", "op": "gt", "value": 1}], limit=5)
     body = r.call_args.kwargs["json"]
     assert body["market"] == "india" and body["limit"] == 5 and body["conditions"][0]["op"] == "gt"
+    strict = MarketClient("https://api.test", auto_resolve=False)
     with pytest.raises(ValueError):
-        client.symbol("RELIANCE")
+        strict.symbol("RELIANCE")
 
 
 def test_candles_dataframe(client):
@@ -109,3 +110,24 @@ def test_candles_dataframe(client):
     with mock.patch.object(client.session, "request", return_value=ok(rows)):
         df = client.candles("NSE:TCS", as_dataframe=True)
     assert list(df.columns) == ["open", "high", "low", "close", "volume"] and isinstance(df.index, pd.DatetimeIndex)
+
+
+def test_plain_names_are_resolved_once_and_cached(client):
+    resolve = ok({"query": "reliance", "best": {"full_symbol": "NSE:RELIANCE"}, "alternatives": []})
+    quote = ok([{"symbol": "NSE:RELIANCE", "price": 1}])
+    with mock.patch.object(client.session, "request", side_effect=[resolve, quote, quote]) as r:
+        client.quote("Reliance")
+        client.quote("reliance")           # second call reuses the cached resolution
+    urls = [call.args[1] for call in r.call_args_list]
+    assert urls == ["https://api.test/v1/symbols/resolve", "https://api.test/v1/quotes", "https://api.test/v1/quotes"]
+    assert r.call_args_list[1].kwargs["params"] == {"symbols": "NSE:RELIANCE"}
+
+
+def test_qualified_symbols_skip_resolution_and_resolution_can_be_disabled():
+    with mock.patch("time.sleep"):
+        c = MarketClient("https://api.test", auto_resolve=False)
+        with pytest.raises(ValueError):
+            c.symbol("reliance")
+        with mock.patch.object(c.session, "request", return_value=ok([])) as r:
+            c.quotes("nse:tcs")
+    assert r.call_args.kwargs["params"] == {"symbols": "NSE:TCS"}

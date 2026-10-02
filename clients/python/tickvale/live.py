@@ -62,7 +62,7 @@ class LiveSession:
             from websockets.asyncio.client import connect
             from websockets.exceptions import ConnectionClosed
         except ImportError as e:  # pragma: no cover
-            raise ImportError("Live streaming needs the 'websockets' package: pip install open-market-client[live]") from e
+            raise ImportError("Live streaming needs the 'websockets' package: pip install tickvale[live]") from e
 
         headers = {"X-API-Key": self.api_key} if self.api_key else {}
         backoff = 1.0

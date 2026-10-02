@@ -80,9 +80,9 @@ class Guard:
         name = match_key(s, presented)
         if s.auth_enabled or s.require_api_key:
             if not presented:
-                raise ApiError(401, "Missing API key. Send it as the X-API-Key header or 'Authorization: Bearer <key>'.")
+                raise ApiError(401, "Missing API key.", hint="Send it as the X-API-Key header, or as 'Authorization: Bearer <key>'.")
             if name is None:
-                raise ApiError(401, "Invalid API key.")
+                raise ApiError(401, "Invalid API key.", hint="Check for typos or extra spaces. Keys are set with the API_KEYS environment variable on the server.")
             return name
         return name or f"ip:{client_ip(s, headers, fallback_ip)}"
 
@@ -98,7 +98,7 @@ class Guard:
         }
         response.headers.update(request.state.rate_headers)
         if not allowed:
-            raise ApiError(429, "Rate limit exceeded. Slow down or ask for a higher limit.",
+            raise ApiError(429, "Rate limit exceeded.", hint=f"Wait {reset} seconds. Cache results on your side to use fewer requests.",
                            headers={**request.state.rate_headers, "Retry-After": str(reset)})
         return who
 

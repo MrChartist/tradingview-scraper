@@ -12,11 +12,13 @@ from typing import Any, List, Literal, Optional
 from fastapi import HTTPException, APIRouter, Depends, Query, Request, Security, WebSocket
 from fastapi.security import APIKeyHeader
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+from typing_extensions import Annotated
 
 from api import services as svc
 from api.config import Settings
 from api.errors import ApiError
+from api.glossary import CATALOG, GLOSSARY, FIELD_TERMS
 from api.live import QuoteHub, Subscription, valid_symbol
 from api.security import Guard
 
@@ -30,12 +32,14 @@ def envelope(request: Request, data: Any, **meta) -> dict:
 def parse_symbols(raw: str, limit: int) -> List[str]:
     symbols = list(dict.fromkeys(s.strip().upper() for s in raw.split(",") if s.strip()))
     if not symbols:
-        raise ApiError(400, "Pass at least one symbol, for example symbols=NSE:RELIANCE,NASDAQ:AAPL.")
+        raise ApiError(400, "Pass at least one symbol, for example symbols=NSE:RELIANCE,NASDAQ:AAPL.",
+                       hint="Don't know the code? GET /v1/symbols/resolve?q=reliance returns it.")
     if len(symbols) > limit:
-        raise ApiError(400, f"At most {limit} symbols per request.")
+        raise ApiError(400, f"At most {limit} symbols per request.", hint="Split the list into several requests.")
     bad = [s for s in symbols if not valid_symbol(s)]
     if bad:
-        raise ApiError(400, f"Invalid symbol format: {', '.join(bad[:5])}. Use EXCHANGE:TICKER, for example NSE:RELIANCE.")
+        raise ApiError(400, f"Invalid symbol format: {', '.join(bad[:5])}. Use EXCHANGE:TICKER, for example NSE:RELIANCE.",
+                       hint="Don't know the code? GET /v1/symbols/resolve?q=" + bad[0].lower().replace(" ", "%20") + " finds the best match.")
     return symbols
 
 
@@ -48,7 +52,7 @@ def parse_when(value: Optional[str], default: int) -> int:
             return int(value)
         return int(datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp())
     except ValueError:
-        raise ApiError(400, f"Invalid date '{value}'. Use YYYY-MM-DD or epoch seconds.")
+        raise ApiError(400, f"Invalid date '{value}'. Use YYYY-MM-DD or epoch seconds.", hint="Example: from=2026-10-01&to=2026-10-14")
 
 
 # ── Screener request model ────────────────────────────────────────
@@ -66,7 +70,8 @@ class Condition(BaseModel):
 class ScreenerRequest(BaseModel):
     market: str = Field("india", examples=["india", "america", "crypto"])
     conditions: List[Condition] = Field(default_factory=list, max_length=20)
-    columns: Optional[List[str]] = Field(None, max_length=30, description="Fields to return. Defaults to a standard set.")
+    columns: Optional[List[Annotated[str, StringConstraints(pattern=FIELD_PATTERN)]]] = Field(
+        None, max_length=30, description="Fields to return. Defaults to a standard set.")
     sort_by: str = Field("volume", pattern=FIELD_PATTERN)
     sort_order: Literal["asc", "desc"] = "desc"
     limit: int = Field(25, ge=1, le=200)
@@ -110,7 +115,28 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
             "cache_entries": len(svc._CACHE),
         })
 
+    @router.get("/markets", tags=["help"], summary="What you can ask for: markets, categories, timeframes, filter fields (no key needed)")
+    def catalogue():
+        return {"data": CATALOG}
+
+    @router.get("/glossary", tags=["help"], summary="Plain-language meaning of every market term (no key needed)")
+    def glossary():
+        return {"data": {"terms": GLOSSARY, "field_terms": FIELD_TERMS}}
+
     # ── symbols ───────────────────────────────────────────────────
+    @router.get("/symbols/resolve", tags=["symbols"], dependencies=auth,
+                summary="Turn a name like 'reliance' or 'apple' into the right EXCHANGE:TICKER",
+                description="Returns the best match and a few alternatives. Use `best.full_symbol` in the other endpoints.")
+    def resolve(request: Request, q: str = Query(..., min_length=1, max_length=60, description="A company, ticker or coin name"),
+                country: Optional[str] = Query(None, min_length=2, max_length=2, description="Two-letter country to prefer on ties, e.g. IN or US. Default comes from DEFAULT_COUNTRY.")):
+        try:
+            result = svc.resolve_symbol(q, (country or settings.default_country))
+        except Exception:
+            raise ApiError(502, "Symbol search is unavailable right now.")
+        if not result["best"]:
+            raise ApiError(404, f"Nothing matched '{q}'.", hint="Try a shorter or different spelling, for example the company's short name.")
+        return envelope(request, result, matched=1 + len(result["alternatives"]))
+
     @router.get("/symbols/search", tags=["symbols"], dependencies=auth, summary="Find a symbol by name or ticker")
     def search(request: Request, q: str = Query(..., min_length=1, max_length=40), limit: int = Query(10, ge=1, le=30)):
         try:

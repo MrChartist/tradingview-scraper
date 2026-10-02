@@ -4,10 +4,11 @@ import csv
 import json
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from api import services as svc
+from api.glossary import CATALOG, GLOSSARY, FIELD_TERMS
 
 Fmt = Literal["csv", "json"]
 router = APIRouter(prefix="/api", tags=["web-ui"], include_in_schema=False)
@@ -25,6 +26,29 @@ def search_symbols(q: str = Query(..., min_length=1, max_length=40), limit: int 
         svc.logger.warning("Symbol search failed: %s", e)
         raise HTTPException(status_code=502, detail="Symbol search is unavailable right now")
     return {"status": "success", "data": results, "total": len(results)}
+
+
+@router.get("/glossary")
+def glossary():
+    return {"status": "success", "terms": GLOSSARY, "field_terms": FIELD_TERMS, "catalog": CATALOG}
+
+
+@router.get("/resolve")
+def resolve(request: Request, q: str = Query(..., min_length=1, max_length=60)):
+    try:
+        return {"status": "success", "data": svc.resolve_symbol(q, request.app.state.settings.default_country)}
+    except Exception as e:
+        svc.logger.warning("Resolve failed: %s", e)
+        raise HTTPException(status_code=502, detail="Search is unavailable right now.")
+
+
+@router.get("/quote/{exchange}/{ticker}")
+def quote(exchange: str, ticker: str):
+    svc.check_symbol_parts(exchange, ticker)
+    quotes, _ = svc.snapshot_quotes([f"{exchange.upper()}:{ticker.upper()}"])
+    if not quotes:
+        raise HTTPException(status_code=404, detail="Symbol not found")
+    return {"status": "success", "data": quotes[0]}
 
 
 @router.get("/overview/{exchange}/{ticker}")

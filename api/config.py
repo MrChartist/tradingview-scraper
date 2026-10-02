@@ -52,6 +52,8 @@ class Settings:
     # Honour X-Forwarded-For for client IP (only behind a trusted proxy).
     trust_proxy_headers: bool = False
     log_level: str = "INFO"
+    # Breaks ties when a name matches listings in several countries (for example TCS). "" = no preference.
+    default_country: str = "IN"
 
     @property
     def auth_enabled(self) -> bool:
@@ -72,4 +74,5 @@ def load_settings() -> Settings:
         hub_max_upstream_symbols=_int("HUB_MAX_UPSTREAM_SYMBOLS", 500),
         trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", False),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        default_country=os.getenv("DEFAULT_COUNTRY", "IN").strip().upper(),
     )

@@ -1,4 +1,3 @@
-import json
 import time
 import logging
 import re
@@ -44,6 +43,15 @@ def cached(key: tuple, producer: Callable[[], Any], ttl: Optional[int] = None):
             _CACHE.pop(oldest, None)
         _CACHE[key] = (now, value)
     return value
+
+
+_PART_RE = re.compile(r"^[A-Za-z0-9_.!&\-/ ]{1,40}$")
+
+
+def check_symbol_parts(exchange: str, ticker: str) -> None:
+    """Reject anything that could not be a real exchange / ticker before it reaches an upstream URL."""
+    if not _PART_RE.match(exchange) or not _PART_RE.match(ticker) or ".." in exchange + ticker:
+        raise HTTPException(status_code=400, detail="Invalid exchange or ticker. Use letters and numbers, like NSE and RELIANCE.")
 
 
 def check_timeframe(timeframe: str) -> str:
@@ -136,6 +144,7 @@ def with_native_currency(exchange: str, ticker: str, response: dict) -> dict:
 
 # ─── Data fetch helpers (shared by JSON and download endpoints) ────
 def fetch_overview(exchange: str, ticker: str) -> dict:
+    check_symbol_parts(exchange, ticker)
     symbol = f"{exchange.upper()}:{ticker.upper()}"
     def produce():
         resp = overview_scraper.get_symbol_overview(symbol=symbol)
@@ -145,6 +154,7 @@ def fetch_overview(exchange: str, ticker: str) -> dict:
 
 
 def fetch_indicators(exchange: str, ticker: str, timeframe: str) -> dict:
+    check_symbol_parts(exchange, ticker)
     check_timeframe(timeframe)
     key = ("indicators", exchange.upper(), ticker.upper(), timeframe)
     return cached(key, lambda: indicators_scraper.scrape(
@@ -154,6 +164,7 @@ def fetch_indicators(exchange: str, ticker: str, timeframe: str) -> dict:
 
 
 def fetch_fundamentals(exchange: str, ticker: str) -> dict:
+    check_symbol_parts(exchange, ticker)
     symbol = f"{exchange.upper()}:{ticker.upper()}"
     def produce():
         resp = fundamentals_scraper.get_fundamentals(symbol=symbol)
@@ -163,6 +174,7 @@ def fetch_fundamentals(exchange: str, ticker: str) -> dict:
 
 
 def fetch_ohlcv(exchange: str, ticker: str, timeframe: str, candles: int) -> list:
+    check_symbol_parts(exchange, ticker)
     check_timeframe(timeframe)
     key = ("ohlcv", exchange.upper(), ticker.upper(), timeframe, candles)
 
@@ -236,6 +248,7 @@ def search_symbols_raw(q: str) -> list:
             "type": r.get("type"),
             "country": r.get("country"),
             "currency": r.get("currency_code"),
+            "primary": bool(r.get("is_primary_listing")),
         }
         for r in raw
         if r.get("symbol") and r.get("exchange")
@@ -293,6 +306,7 @@ def _absolute(path: Optional[str]) -> Optional[str]:
 
 
 def fetch_news(exchange: str, ticker: str, limit: int, language: str = "en") -> list:
+    check_symbol_parts(exchange, ticker)
     from tradingview_scraper.symbols.news import NewsScraper
 
     def produce():
@@ -352,3 +366,49 @@ def fetch_calendar(kind: str, markets: list, ts_from: int, ts_to: int, limit: in
 
     rows = cached(("calendar", kind, tuple(markets), ts_from, ts_to, limit), produce, ttl=300)
     return [{"symbol": row["s"], **dict(zip(spec["columns"], row["d"]))} for row in rows]
+
+
+# ─── Name -> symbol resolution ─────────────────────────────────────
+_PREFERRED_TYPES = {"stock", "fund", "dr", "crypto", "spot", "etf"}
+_MAIN_VENUES = {e for exchanges in MAIN_EXCHANGES.values() for e in exchanges} | {"BINANCE", "COINBASE"}
+
+
+# Everyday names for the biggest coins, so "bitcoin" or "btc" means the coin, not a company with that ticker.
+CRYPTO_ALIASES = {
+    "btc": "BTCUSDT", "bitcoin": "BTCUSDT", "eth": "ETHUSDT", "ethereum": "ETHUSDT", "sol": "SOLUSDT", "solana": "SOLUSDT",
+    "xrp": "XRPUSDT", "ripple": "XRPUSDT", "bnb": "BNBUSDT", "doge": "DOGEUSDT", "dogecoin": "DOGEUSDT",
+    "ada": "ADAUSDT", "cardano": "ADAUSDT", "matic": "MATICUSDT", "ltc": "LTCUSDT", "litecoin": "LTCUSDT",
+    "dot": "DOTUSDT", "polkadot": "DOTUSDT", "shib": "SHIBUSDT", "avax": "AVAXUSDT", "link": "LINKUSDT", "trx": "TRXUSDT",
+}
+
+
+def resolve_symbol(query: str, prefer_country: str = "") -> dict:
+    """Turn what a person typed ('reliance', 'apple', 'btc') into the best EXCHANGE:TICKER.
+
+    prefer_country (for example "IN") breaks ties toward listings from that country, so
+    "tcs" means India's TCS rather than an unrelated company with the same ticker."""
+    q = query.strip()
+    if q.lower() in CRYPTO_ALIASES:
+        pair = CRYPTO_ALIASES[q.lower()]
+        return {"query": query, "best": {"exchange": "BINANCE", "symbol": pair, "full_symbol": f"BINANCE:{pair}",
+                                         "description": f"{q.upper()} / Tether (crypto)", "type": "spot"}, "alternatives": []}
+    if ":" in q and SYMBOL_PATTERN.match(q.upper()):
+        exchange, ticker = q.upper().split(":", 1)
+        return {"query": query, "best": {"exchange": exchange, "symbol": ticker, "full_symbol": f"{exchange}:{ticker}"},
+                "alternatives": []}
+    results = search_symbols_raw(q)
+    ql = q.lower()
+
+    def score(r):
+        s = 0
+        s += 4 if (r["symbol"] or "").lower() == ql else 0
+        s += 3 if (r["description"] or "").lower().startswith(ql) else 0
+        s += 2 if r.get("primary") else 0
+        s += 1 if r["exchange"] in _MAIN_VENUES else 0
+        s += 2 if (r["type"] or "") in _PREFERRED_TYPES else -2
+        s += 3 if prefer_country and (r.get("country") or "").upper() == prefer_country.upper() else 0
+        return s
+
+    ranked = sorted(results, key=score, reverse=True)
+    shaped = [{**r, "full_symbol": f"{r['exchange']}:{r['symbol']}"} for r in ranked]
+    return {"query": query, "best": shaped[0] if shaped else None, "alternatives": shaped[1:5]}

@@ -1,4 +1,4 @@
-"""Open Market Terminal: web UI plus a production API for TradingView market data.
+"""Tickvale: web UI plus a production API for TradingView market data.
 
 Run:  uvicorn api.main:app --port 8000
 Docs: /docs (interactive), /redoc.  Configuration: environment variables, see .env.example.
@@ -37,6 +37,7 @@ Unofficial; not affiliated with TradingView. See the README for terms-of-use and
 """
 
 TAGS = [
+    {"name": "help", "description": "New to markets? Start here: valid values and plain-language term meanings."},
     {"name": "quotes", "description": "Latest prices for many symbols at once."},
     {"name": "live", "description": "Continuous quotes over WebSocket or server-sent events."},
     {"name": "symbols", "description": "Per-symbol data."},
@@ -64,7 +65,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         yield
         await app.state.hub.close()
 
-    app = FastAPI(title="Open Market Terminal API", description=DESCRIPTION, version=VERSION,
+    app = FastAPI(title="Tickvale API", description=DESCRIPTION, version=VERSION,
                   openapi_tags=TAGS, lifespan=lifespan)
     app.state.settings = settings
     install_handlers(app)
@@ -93,7 +94,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     @app.get("/health", tags=["meta"], include_in_schema=False)
     def health():
-        return {"status": "ok", "message": "Open Market Terminal is running"}
+        return {"status": "ok", "message": "Tickvale is running"}
 
     if settings.enable_web_ui:
         from api.ui import router as ui_router

@@ -8,7 +8,7 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 |---|---|
 | **Auth** | `X-API-Key: <key>` or `Authorization: Bearer <key>`. WebSocket and SSE can also use `?api_key=<key>` (browsers cannot set headers there). Without configured keys the server runs in open mode. |
 | **Success** | `{"data": ..., "meta": {"request_id": "...", ...}}` |
-| **Error** | `{"error": {"code": "...", "message": "...", "request_id": "..."}}` |
+| **Error** | `{"error": {"code": "...", "message": "...", "hint": "what to do next", "request_id": "..."}}` |
 | **Error codes** | `bad_request` 400, `unauthorized` 401, `not_found` 404, `validation_error` 422, `rate_limited` 429, `upstream_error` 502, `unavailable` 503, `internal_error` 500 |
 | **Rate limits** | `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` on every response. `429` carries `Retry-After` (seconds). |
 | **Symbols** | `EXCHANGE:TICKER`, upper case, for example `NSE:RELIANCE`, `NASDAQ:AAPL`, `BINANCE:BTCUSDT`. Use `/v1/symbols/search` to find them. |
@@ -22,6 +22,9 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 |---|---|---|
 | GET | `/v1/health` | Liveness (no key needed) |
 | GET | `/v1/status` | Version, live-hub state, limits |
+| GET | `/v1/markets` | Valid markets, categories, timeframes and screener fields in plain language (no key) |
+| GET | `/v1/glossary` | What every market term means (no key) |
+| GET | `/v1/symbols/resolve?q=reliance` | Best `EXCHANGE:TICKER` for a name, plus alternatives. `country=IN` breaks ties (default from `DEFAULT_COUNTRY`) |
 | GET | `/v1/symbols/search?q=reliance` | Matching symbols |
 | GET | `/v1/quotes?symbols=NSE:RELIANCE,NASDAQ:AAPL` | Latest quote for up to 100 symbols. `meta.not_found` lists unknown ones |
 | GET | `/v1/symbols/{exchange}/{ticker}` | Profile and key statistics |
@@ -47,7 +50,7 @@ Timeframes: `1m 5m 15m 30m 1h 2h 4h 1d 1w 1M`. Movers markets: `stocks-india sto
   "open": 1180.1, "high": 1183.9, "low": 1160.8, "volume": 16771221,
   "bid": null, "ask": null, "currency": "INR", "name": "RELIANCE",
   "description": "Reliance Industries Limited", "exchange": "NSE", "type": "stock",
-  "update_mode": "delayed_streaming_900", "realtime": false, "delayed": true, "delay_seconds": 900
+  "update_mode": "delayed_streaming_900", "freshness": "15 min delayed", "realtime": false, "delayed": true, "delay_seconds": 900
 }
 ```
 

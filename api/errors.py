@@ -16,8 +16,10 @@ CODES = {
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str, code: Optional[str] = None, headers: Optional[dict] = None):
+    def __init__(self, status: int, message: str, code: Optional[str] = None, headers: Optional[dict] = None,
+                 hint: Optional[str] = None):
         super().__init__(message)
+        self.hint = hint
         self.status = status
         self.message = message
         self.code = code or CODES.get(status, "error")
@@ -28,12 +30,23 @@ def request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "-")
 
 
-def error_response(request: Request, status: int, code: str, message: str, headers: Optional[dict] = None):
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"code": code, "message": message, "request_id": request_id(request)}},
-        headers=headers,
-    )
+DEFAULT_HINTS = {
+    401: "Send your key in the X-API-Key header, or as 'Authorization: Bearer <key>'.",
+    404: "Check the exchange and ticker. Find the right one with GET /v1/symbols/search?q=<company name>.",
+    422: "See GET /v1/markets for valid values, and /docs for every parameter.",
+    429: "Wait for the number of seconds in the Retry-After header, then try again.",
+    502: "The market data source had a problem. Try again in a few seconds.",
+    503: "The service is busy. Try again shortly.",
+}
+
+
+def error_response(request: Request, status: int, code: str, message: str, headers: Optional[dict] = None,
+                   hint: Optional[str] = None):
+    error = {"code": code, "message": message, "request_id": request_id(request)}
+    hint = hint or DEFAULT_HINTS.get(status)
+    if hint:
+        error["hint"] = hint
+    return JSONResponse(status_code=status, content={"error": error}, headers=headers)
 
 
 def is_product_api(request: Request) -> bool:
@@ -43,7 +56,7 @@ def is_product_api(request: Request) -> bool:
 def install_handlers(app) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
-        return error_response(request, exc.status, exc.code, exc.message, exc.headers)
+        return error_response(request, exc.status, exc.code, exc.message, exc.headers, exc.hint)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException):

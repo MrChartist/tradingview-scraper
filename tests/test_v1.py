@@ -146,8 +146,9 @@ def test_websocket_subscribe_flow_rejects_bad_symbols():
 # ── live hub (no network) ──────────────────────────────────────────
 def test_symbol_format_and_delay_info():
     assert valid_symbol("NSE:M&M") and valid_symbol("NSE:BAJAJ-AUTO") and not valid_symbol("nse:tcs")
-    assert delay_info("delayed_streaming_900") == {"realtime": False, "delayed": True, "delay_seconds": 900}
-    assert delay_info("streaming")["realtime"] is True
+    assert delay_info("delayed_streaming_900") == {"realtime": False, "delayed": True, "delay_seconds": 900, "freshness": "15 min delayed"}
+    assert delay_info("streaming")["realtime"] is True and delay_info("streaming")["freshness"] == "real time"
+    assert delay_info("endofday")["freshness"] == "end of day" and delay_info(None)["freshness"] == "unknown"
 
 
 def test_hub_merges_partial_updates_and_coalesces():
@@ -190,3 +191,63 @@ def test_hub_reports_unknown_symbol_and_late_joiner_gets_snapshot():
 def test_normalize_shape():
     q = normalize("NSE:TCS", {"lp": 1, "chp": 2, "update_mode": "delayed_streaming_900"})
     assert q["price"] == 1 and q["change_percent"] == 2 and q["delay_seconds"] == 900
+
+
+# ── help for people new to markets ────────────────────────────────
+def test_help_endpoints_are_public_and_plain():
+    with make() as c:
+        markets = c.get("/v1/markets").json()["data"]
+        terms = c.get("/v1/glossary").json()["data"]
+    assert {m["id"] for m in markets["markets"]} >= {"stocks-india", "crypto"}
+    assert any(t["id"] == "1d" for t in markets["timeframes"])
+    assert "pe" in terms["terms"] and "profit" in terms["terms"]["pe"]["plain"].lower()
+    assert terms["field_terms"]["market_cap_basic"] == "market_cap"
+    # every field mapping points at a real glossary entry
+    assert set(terms["field_terms"].values()) <= set(terms["terms"])
+
+
+def test_errors_carry_a_hint():
+    with make() as c:
+        missing = c.get("/v1/quotes?symbols=NSE:TCS").json()["error"]
+        bad = c.get("/v1/quotes?symbols=reliance", headers=H).json()["error"]
+    assert "X-API-Key" in missing["hint"]
+    assert "/v1/symbols/resolve?q=reliance" in bad["hint"]
+
+
+def test_resolve_endpoint_and_country_preference():
+    hits = [
+        {"exchange": "MYX", "symbol": "TCS", "description": "TCS Group Holdings Bhd", "type": "stock", "country": "MY", "primary": True},
+        {"exchange": "NSE", "symbol": "TCS", "description": "Tata Consultancy Services Limited", "type": "stock", "country": "IN", "primary": True},
+    ]
+    with make() as c, mock.patch.object(svc, "search_symbols_raw", return_value=hits):
+        india = c.get("/v1/symbols/resolve?q=tcs", headers=H).json()["data"]
+        us_pref = c.get("/v1/symbols/resolve?q=tcs&country=MY", headers=H).json()["data"]
+    assert india["best"]["full_symbol"] == "NSE:TCS" and india["alternatives"][0]["full_symbol"] == "MYX:TCS"
+    assert us_pref["best"]["full_symbol"] == "MYX:TCS"
+
+
+def test_resolve_known_coin_and_qualified_symbol_skip_search():
+    with mock.patch.object(svc, "search_symbols_raw", side_effect=AssertionError("should not search")):
+        assert svc.resolve_symbol("bitcoin")["best"]["full_symbol"] == "BINANCE:BTCUSDT"
+        assert svc.resolve_symbol("nse:tcs")["best"]["full_symbol"] == "NSE:TCS"
+
+
+def test_resolve_nothing_found_is_404_with_hint():
+    with make() as c, mock.patch.object(svc, "search_symbols_raw", return_value=[]):
+        r = c.get("/v1/symbols/resolve?q=zzzzqq", headers=H)
+    assert r.status_code == 404 and r.json()["error"]["hint"]
+
+
+def test_path_parts_are_validated():
+    with make() as c:
+        r = c.get("/v1/symbols/NSE/..%2F..%2Fetc/fundamentals", headers=H)
+        assert r.status_code in (400, 404)
+        assert c.get("/v1/symbols/%3Cscript%3E/X", headers=H).status_code == 400
+    with pytest.raises(Exception):
+        svc.check_symbol_parts("NSE", "a" * 80)
+
+
+def test_screener_columns_must_look_like_field_names():
+    with make() as c:
+        r = c.post("/v1/screener", json={"columns": ["close", "x; drop"]}, headers=H)
+    assert r.status_code == 422

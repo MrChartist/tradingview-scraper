@@ -1,7 +1,7 @@
 """Synchronous REST client. Live streaming lives in live.py."""
 import random
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 import requests
 
@@ -34,10 +34,11 @@ def _error_from(resp: requests.Response) -> MarketApiError:
     return cls(message, **kwargs)
 
 
-class MarketClient:
-    """Client for the Open Market Terminal API.
+class TickvaleClient:
+    """Client for the Tickvale API.
 
-    >>> client = MarketClient("https://api.example.com", api_key="...")
+    >>> client = TickvaleClient("https://api.example.com", api_key="...")
+    >>> client.quote("reliance")            # plain names work; they are resolved to NSE:RELIANCE
     >>> client.quotes(["NSE:RELIANCE", "NASDAQ:AAPL"])
 
     Transient failures (429, 502, 503, 504 and network errors) are retried with backoff,
@@ -45,13 +46,16 @@ class MarketClient:
     """
 
     def __init__(self, base_url: str = "http://localhost:8000", api_key: Optional[str] = None, *,
-                 timeout: float = 30, max_retries: int = 3, session: Optional[requests.Session] = None):
+                 timeout: float = 30, max_retries: int = 3, session: Optional[requests.Session] = None,
+                 auto_resolve: bool = True):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
         self.max_retries = max_retries
+        self.auto_resolve = auto_resolve
+        self._resolved: Dict[str, str] = {}
         self.session = session or requests.Session()
-        self.session.headers.update({"Accept": "application/json", "User-Agent": "open-market-client/1.0"})
+        self.session.headers.update({"Accept": "application/json", "User-Agent": "tickvale/1.0"})
         if api_key:
             self.session.headers["X-API-Key"] = api_key
 
@@ -94,9 +98,12 @@ class MarketClient:
     def quotes(self, symbols: Symbols, with_meta: bool = False):
         """Latest quote for up to 100 symbols like 'NSE:RELIANCE'. With `with_meta`,
         returns (quotes, meta) and meta['not_found'] lists unknown symbols."""
-        return self._get("/v1/quotes", {"symbols": _csv(symbols)}, with_meta)
+        names = [symbols] if isinstance(symbols, str) else list(symbols)
+        full = ",".join(self.full_symbol(n) for n in names)
+        return self._get("/v1/quotes", {"symbols": full}, with_meta)
 
     def quote(self, symbol: str) -> dict:
+        """One quote. Accepts a plain name too: quote('reliance')."""
         data, meta = self.quotes([symbol], with_meta=True)
         if not data:
             raise NotFoundError(f"Symbol not found: {symbol}", status=404, code="not_found")
@@ -105,11 +112,31 @@ class MarketClient:
     def search(self, query: str, limit: int = 10) -> List[dict]:
         return self._get("/v1/symbols/search", {"q": query, "limit": limit})
 
-    @staticmethod
-    def _sym(symbol: str) -> str:
-        if ":" not in symbol:
-            raise ValueError("Use EXCHANGE:TICKER, for example 'NSE:RELIANCE'")
-        exchange, ticker = symbol.split(":", 1)
+    def resolve(self, text: str) -> dict:
+        """Turn a name like 'reliance' or 'apple' into the best match: {'best': {...}, 'alternatives': [...]}."""
+        return self._get("/v1/symbols/resolve", {"q": text})
+
+    def full_symbol(self, text: str) -> str:
+        """'reliance' -> 'NSE:RELIANCE'. Already-qualified symbols pass through untouched."""
+        if ":" in text:
+            return text.upper()
+        if not self.auto_resolve:
+            raise ValueError("Use EXCHANGE:TICKER, for example 'NSE:RELIANCE' (or enable auto_resolve)")
+        key = text.strip().lower()
+        if key not in self._resolved:
+            self._resolved[key] = self.resolve(text)["best"]["full_symbol"]
+        return self._resolved[key]
+
+    def markets(self) -> dict:
+        """Valid markets, categories, timeframes and screener fields, in plain language."""
+        return self._request("GET", "/v1/markets")["data"]
+
+    def glossary(self) -> dict:
+        """What every market term means, in plain language."""
+        return self._request("GET", "/v1/glossary")["data"]["terms"]
+
+    def _sym(self, symbol: str) -> str:
+        exchange, ticker = self.full_symbol(symbol).split(":", 1)
         return f"/v1/symbols/{exchange}/{ticker}"
 
     def symbol(self, symbol: str) -> dict:
@@ -160,7 +187,7 @@ class MarketClient:
 
     # ── live ─────────────────────────────────────────────────────
     def live(self, symbols: Optional[Symbols] = None):
-        """Returns a LiveSession (async). See open_market_client.live."""
+        """Returns a LiveSession (async). See tickvale.live."""
         from .live import LiveSession
         return LiveSession(self.base_url, self.api_key, symbols)
 
@@ -176,3 +203,7 @@ class MarketClient:
 
     def __exit__(self, *exc):
         self.close()
+
+
+# Original name, kept so existing code keeps working.
+MarketClient = TickvaleClient

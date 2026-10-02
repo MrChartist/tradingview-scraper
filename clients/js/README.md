@@ -1,11 +1,11 @@
-# open-market-client (JavaScript / TypeScript)
+# tickvale (JavaScript / TypeScript)
 
 Zero dependencies. Node 18+ (Node 22+ for live streaming, or pass `{ WebSocket }` from `ws`) and modern browsers.
 
 ```js
-import { MarketClient, RateLimitError } from './index.js';
+import { TickvaleClient, RateLimitError } from './index.js';
 
-const client = new MarketClient({ baseUrl: 'https://api.example.com', apiKey: process.env.MARKET_KEY });
+const client = new TickvaleClient({ baseUrl: 'https://api.example.com', apiKey: process.env.MARKET_KEY });
 console.log(await client.quote('NSE:RELIANCE'));
 console.log(await client.candles('NSE:RELIANCE', { timeframe: '1d', limit: 200 }));
 

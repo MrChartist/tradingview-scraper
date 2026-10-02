@@ -1,4 +1,4 @@
-// Open Market Terminal client. Zero dependencies; Node 18+ (Node 22+ for live streaming) and browsers.
+// Tickvale client. Zero dependencies; Node 18+ (Node 22+ for live streaming) and browsers.
 
 export class MarketApiError extends Error {
   constructor(message, { status = null, code = 'error', requestId = null, retryAfter = null } = {}) {
@@ -37,7 +37,7 @@ function errorFrom(status, body, headers) {
   return new MarketApiError(msg, opts);
 }
 
-export class MarketClient {
+export class TickvaleClient {
   /**
    * @param {object} options
    * @param {string} [options.baseUrl]   e.g. https://api.example.com
@@ -47,7 +47,9 @@ export class MarketClient {
    * @param {typeof fetch} [options.fetch]
    * @param {typeof WebSocket} [options.WebSocket]  pass the `ws` package on Node < 22
    */
-  constructor({ baseUrl = 'http://localhost:8000', apiKey, timeoutMs = 30000, maxRetries = 3, fetch: f, WebSocket: ws } = {}) {
+  constructor({ baseUrl = 'http://localhost:8000', apiKey, timeoutMs = 30000, maxRetries = 3, autoResolve = true, fetch: f, WebSocket: ws } = {}) {
+    this.autoResolve = autoResolve;
+    this._resolved = new Map();
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.apiKey = apiKey;
     this.timeoutMs = timeoutMs;
@@ -91,28 +93,48 @@ export class MarketClient {
     return withMeta ? { data: body.data, meta: body.meta } : body.data;
   }
 
-  static _sym(symbol) {
-    const i = symbol.indexOf(':');
-    if (i < 1) throw new TypeError("Use EXCHANGE:TICKER, for example 'NSE:RELIANCE'");
-    return `/v1/symbols/${encodeURIComponent(symbol.slice(0, i))}/${encodeURIComponent(symbol.slice(i + 1))}`;
+  /** Turn a name like 'reliance' or 'apple' into the best match: { best, alternatives }. */
+  resolve(text) { return this._get('/v1/symbols/resolve', { q: text }); }
+
+  /** 'reliance' -> 'NSE:RELIANCE'. Already-qualified symbols pass through. */
+  async fullSymbol(text) {
+    if (text.includes(':')) return text.toUpperCase();
+    if (!this.autoResolve) throw new TypeError("Use EXCHANGE:TICKER, for example 'NSE:RELIANCE' (or enable autoResolve)");
+    const key = text.trim().toLowerCase();
+    if (!this._resolved.has(key)) this._resolved.set(key, (await this.resolve(text)).best.full_symbol);
+    return this._resolved.get(key);
+  }
+
+  /** Valid markets, categories, timeframes and screener fields, in plain language. */
+  async markets() { return (await this._request('GET', '/v1/markets')).data; }
+  /** What every market term means, in plain language. */
+  async glossary() { return (await this._request('GET', '/v1/glossary')).data.terms; }
+
+  async _sym(symbol) {
+    const [exchange, ...rest] = (await this.fullSymbol(symbol)).split(':');
+    return `/v1/symbols/${encodeURIComponent(exchange)}/${encodeURIComponent(rest.join(':'))}`;
   }
 
   health() { return this._request('GET', '/v1/health'); }
   status() { return this._get('/v1/status'); }
 
   /** Latest quotes (max 100). With withMeta, resolves to { data, meta } and meta.not_found lists unknown symbols. */
-  quotes(symbols, { withMeta = false } = {}) { return this._get('/v1/quotes', { symbols: csv(symbols) }, withMeta); }
+  async quotes(symbols, { withMeta = false } = {}) {
+    const names = Array.isArray(symbols) ? symbols : [symbols];
+    const full = await Promise.all(names.map(n => this.fullSymbol(n)));
+    return this._get('/v1/quotes', { symbols: full.join(',') }, withMeta);
+  }
   async quote(symbol) {
     const { data } = await this.quotes([symbol], { withMeta: true });
     if (!data.length) throw new NotFoundError(`Symbol not found: ${symbol}`, { status: 404, code: 'not_found' });
     return data[0];
   }
   search(q, limit = 10) { return this._get('/v1/symbols/search', { q, limit }); }
-  symbol(symbol) { return this._get(MarketClient._sym(symbol)); }
-  fundamentals(symbol) { return this._get(`${MarketClient._sym(symbol)}/fundamentals`); }
-  technicals(symbol, timeframe = '1d') { return this._get(`${MarketClient._sym(symbol)}/technicals`, { timeframe }); }
-  candles(symbol, { timeframe = '1d', limit = 100 } = {}) { return this._get(`${MarketClient._sym(symbol)}/candles`, { timeframe, limit }); }
-  news(symbol, { limit = 20, language = 'en' } = {}) { return this._get(`${MarketClient._sym(symbol)}/news`, { limit, language }); }
+  async symbol(symbol) { return this._get(await this._sym(symbol)); }
+  async fundamentals(symbol) { return this._get(`${await this._sym(symbol)}/fundamentals`); }
+  async technicals(symbol, timeframe = '1d') { return this._get(`${await this._sym(symbol)}/technicals`, { timeframe }); }
+  async candles(symbol, { timeframe = '1d', limit = 100 } = {}) { return this._get(`${await this._sym(symbol)}/candles`, { timeframe, limit }); }
+  async news(symbol, { limit = 20, language = 'en' } = {}) { return this._get(`${await this._sym(symbol)}/news`, { limit, language }); }
   movers({ market = 'stocks-india', category = 'gainers', limit = 25 } = {}) { return this._get('/v1/markets/movers', { market, category, limit }); }
 
   /** conditions: [{ field: 'market_cap_basic', op: 'gte', value: 5e11 }] — ops: gt gte lt lte eq neq in between */
@@ -171,3 +193,6 @@ export class MarketClient {
     };
   }
 }
+
+/** Original name, kept so existing code keeps working. */
+export const MarketClient = TickvaleClient;

@@ -24,7 +24,7 @@ ROWS = [{"symbol": "NSE:ABC", "name": "ABC", "close": 10.5, "change": 2.5, "volu
 
 
 def test_frontend_is_served(client):
-    assert "Open Market" in client.get("/").text
+    assert "Tickvale" in client.get("/").text
     assert client.get("/style.css").status_code == 200
     assert client.get("/script.js").status_code == 200
 

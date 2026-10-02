@@ -15,14 +15,26 @@ function store(key, value) {
     try { localStorage.setItem(key, value); } catch { /* storage may be blocked */ }
 }
 
-/** GET JSON. Throws Error with the API's own message so users see why it failed. */
+const FRIENDLY = {
+    404: "We couldn't find that. Try searching by the company's name.",
+    422: 'Something in the form looks off. Please check the numbers and try again.',
+    429: "You're going a bit fast. Wait a few seconds and try again.",
+    502: 'Our market data source is having trouble. Please try again in a moment.',
+    503: 'The service is busy. Please try again shortly.',
+};
+
+/** GET JSON. Errors carry a plain-English message a non-technical person can act on. */
 async function api(url) {
     let res;
     try { res = await fetch(url); }
-    catch { throw new Error('Cannot reach the server. Check that it is running and your connection is up.'); }
+    catch { throw new Error("Can't reach the server. Check your internet connection and try again."); }
     if (!res.ok) {
-        let detail = `Request failed (${res.status})`;
-        try { const j = await res.json(); if (j.detail) detail = typeof j.detail === 'string' ? j.detail : 'Invalid request'; } catch { /* keep default */ }
+        let detail = FRIENDLY[res.status] || 'Something went wrong. Please try again.';
+        try {
+            const j = await res.json();
+            // The server's own words are used when they are already plain (400-style messages).
+            if (res.status === 400 && typeof j.detail === 'string') detail = j.detail;
+        } catch { /* keep the friendly default */ }
         throw new Error(detail);
     }
     return res.json();
@@ -108,17 +120,21 @@ function badge(n) {
 }
 
 const LABELS = {
-    close: 'Price', change: 'Change %', change_abs: 'Change', change_from_open: 'Change from open',
-    market_cap_basic: 'Market cap', market_cap_calc: 'Market cap (calc.)', market_cap_diluted_calc: 'Market cap (diluted)',
-    price_earnings_ttm: 'P/E (TTM)', earnings_per_share_basic_ttm: 'EPS (TTM)', earnings_per_share_diluted_ttm: 'EPS diluted (TTM)',
-    price_52_week_high: '52-week high', price_52_week_low: '52-week low', 'Value.Traded': 'Value traded (day)',
-    'Recommend.All': 'Rating score', beta_1_year: 'Beta (1Y)', dividends_yield: 'Dividend yield',
-    price_book_fq: 'Price / book', price_sales_ttm: 'Price / sales', debt_to_equity: 'Debt / equity',
-    'Perf.W': 'Week', 'Perf.1M': '1 month', 'Perf.3M': '3 months', 'Perf.6M': '6 months', 'Perf.Y': '1 year', 'Perf.YTD': 'Year to date',
-    'Volatility.D': 'Volatility (day)', 'Volatility.W': 'Volatility (week)', 'Volatility.M': 'Volatility (month)',
-    shares_outstanding: 'Shares outstanding', shares_float: 'Free float', return_on_equity_fq: 'ROE', return_on_assets_fq: 'ROA',
-    return_on_investment_ttm: 'ROI (TTM)', total_revenue: 'Revenue', net_income_fy: 'Net income (FY)',
-    current_ratio_fq: 'Current ratio', quick_ratio_fq: 'Quick ratio',
+    close: 'Price', change: 'Move today', change_abs: 'Change today', change_from_open: 'Move since the open',
+    open: 'Opened at', high: "Today's high", low: "Today's low", volume: 'Shares traded today',
+    market_cap_basic: 'Company size (market cap)', market_cap_calc: 'Company size (calculated)', market_cap_diluted_calc: 'Company size (diluted)',
+    price_earnings_ttm: 'P/E ratio', earnings_per_share_basic_ttm: 'Profit per share (last 12 months)',
+    earnings_per_share_diluted_ttm: 'Profit per share, diluted', price_52_week_high: '1-year high', price_52_week_low: '1-year low',
+    'Value.Traded': 'Money traded today', 'Recommend.All': 'Overall signal score', beta_1_year: 'Beta (1 year)',
+    dividends_yield: 'Dividend yield', price_book_fq: 'Price to book value', price_sales_ttm: 'Price to sales',
+    debt_to_equity: 'Debt compared with equity',
+    'Perf.W': 'Past week', 'Perf.1M': 'Past month', 'Perf.3M': 'Past 3 months', 'Perf.6M': 'Past 6 months', 'Perf.Y': 'Past year', 'Perf.YTD': 'Since January',
+    'Volatility.D': 'Daily swings', 'Volatility.W': 'Weekly swings', 'Volatility.M': 'Monthly swings', ATR: 'Average daily range',
+    shares_outstanding: 'Shares in existence', shares_float: 'Shares available to trade', return_on_equity_fq: 'Return on equity',
+    return_on_assets_fq: 'Return on assets', return_on_investment_ttm: 'Return on investment', total_revenue: 'Yearly sales (revenue)',
+    net_income_fy: 'Yearly profit (net income)', current_ratio_fq: 'Current ratio', quick_ratio_fq: 'Quick ratio',
+    sector: 'Sector', industry: 'Industry', country: 'Country', exchange: 'Exchange', type: 'Type', subtype: 'Sub-type',
+    employees: 'Employees',
 };
 function label(k) {
     if (LABELS[k]) return LABELS[k];
@@ -141,7 +157,25 @@ $('themeBtn').addEventListener('click', () => {
     store('theme', next);
     if (symState.ohlcv) drawChart(false);
 });
-$('helpBtn').addEventListener('click', () => $('helpDialog').showModal());
+
+// ═══════════════════════════════════════════════════════════════════
+//  HELP: welcome card + glossary (text comes from the server, one source of truth)
+// ═══════════════════════════════════════════════════════════════════
+let GLOSS = { terms: {}, field_terms: {}, catalog: { markets: [], categories: {} } };
+const glossLoaded = api('/api/glossary').then(g => { GLOSS = g; paintGlossary(); }).catch(() => {});
+
+function paintGlossary() {
+    const f = ($('glossarySearch').value || '').trim().toLowerCase();
+    const items = Object.values(GLOSS.terms).filter(t => !f || (t.title + ' ' + t.plain).toLowerCase().includes(f));
+    $('glossaryList').innerHTML = items.length
+        ? items.map(t => `<dt>${esc(t.title)}</dt><dd>${esc(t.plain)}</dd>`).join('')
+        : '<p class="hint">No word matches that. Try another spelling.</p>';
+}
+$('glossaryBtn').addEventListener('click', () => { paintGlossary(); $('glossaryDialog').showModal(); $('glossarySearch').focus(); });
+$('glossarySearch').addEventListener('input', paintGlossary);
+
+try { if (!localStorage.getItem('welcomed')) $('welcome').hidden = false; } catch { $('welcome').hidden = false; }
+$('welcomeClose').addEventListener('click', () => { $('welcome').hidden = true; store('welcomed', '1'); });
 
 // ═══════════════════════════════════════════════════════════════════
 //  SECTION NAVIGATION
@@ -177,26 +211,26 @@ document.addEventListener('keydown', e => {
 const tables = {};   // container id -> { rows, cols, sortKey, sortDir, filter }
 
 const MOVER_COLS = [
-    { key: 'symbol', label: 'Symbol', left: true, render: r => symbolCell(r) },
-    { key: 'close', label: 'Price', fmtRow: r => price(r.close, r.currency) },
-    { key: 'change', label: 'Change %', html: badge },
-    { key: 'change_abs', label: 'Change', fmtRow: r => price(r.change_abs, r.currency), tone: true },
-    { key: 'volume', label: 'Volume', fmtRow: r => volume(r.volume, r.currency) },
-    { key: 'market_cap_basic', label: 'Market cap', fmtRow: r => money(r.market_cap_basic, r.currency) },
-    { key: 'price_earnings_ttm', label: 'P/E', fmt: n => isNum(n) ? n.toFixed(1) : '—' },
+    { key: 'symbol', label: 'Company', left: true, render: r => symbolCell(r) },
+    { key: 'close', label: 'Price', tip: 'price', fmtRow: r => price(r.close, r.currency) },
+    { key: 'change', label: 'Today', tip: 'change', html: badge },
+    { key: 'change_abs', label: 'Change', tip: 'change', fmtRow: r => price(r.change_abs, r.currency), tone: true },
+    { key: 'volume', label: 'Shares traded', tip: 'volume', fmtRow: r => volume(r.volume, r.currency) },
+    { key: 'market_cap_basic', label: 'Company size', tip: 'market_cap', fmtRow: r => money(r.market_cap_basic, r.currency) },
+    { key: 'price_earnings_ttm', label: 'P/E', tip: 'pe', fmt: n => isNum(n) ? n.toFixed(1) : '—' },
 ];
 const SCREENER_COLS = MOVER_COLS;
+const termTip = id => (GLOSS.terms[id] ? `${GLOSS.terms[id].title}: ${GLOSS.terms[id].plain}` : '');
 
 function symbolCell(r) {
-    const sym = esc(r.symbol);
-    const desc = r.description || r.name;
-    return `<span class="sym">${sym}</span>${desc && desc !== r.name ? `<span class="sym-sub">${esc(desc)}</span>` : ''}`;
+    const desc = r.description || r.name || r.symbol;
+    return `<span class="sym">${esc(desc)}</span><span class="sym-sub">${esc(r.symbol)}</span>`;
 }
 
 function renderTable(id, rows, cols, { onRowClick } = {}) {
     const c = $(id);
     if (!rows || !rows.length) {
-        c.innerHTML = '<div class="no-data">No results. Try relaxing the filters or switching market.</div>';
+        c.innerHTML = '<div class="no-data"><strong>Nothing matches right now.</strong><br>Try loosening a rule, picking another market, or coming back when the market is open.</div>';
         delete tables[id];
         return;
     }
@@ -226,7 +260,7 @@ function paintTable(id) {
     let h = '<div class="table-wrap"><table><thead><tr>';
     t.cols.forEach(col => {
         const sort = t.sortKey === col.key ? (t.sortDir === 'asc' ? 'ascending' : 'descending') : 'none';
-        h += `<th class="${col.left ? 'left' : ''}" data-key="${esc(col.key)}" aria-sort="${sort}" tabindex="0">${esc(col.label)}</th>`;
+        h += `<th class="${col.left ? 'left' : ''}" data-key="${esc(col.key)}" aria-sort="${sort}" tabindex="0" title="${esc(termTip(col.tip) || 'Click to sort')}">${esc(col.label)}</th>`;
     });
     h += '</tr></thead><tbody>';
     rows.forEach((r, i) => {
@@ -245,7 +279,7 @@ function paintTable(id) {
         });
         h += '</tr>';
     });
-    h += `</tbody></table></div><div class="row-count">${rows.length}${rows.length !== t.rows.length ? ` of ${t.rows.length}` : ''} rows</div>`;
+    h += `</tbody></table></div><div class="row-count">${rows.length}${rows.length !== t.rows.length ? ` of ${t.rows.length}` : ''} ${rows.length === 1 ? 'stock' : 'stocks'}${t.onRowClick ? '. Tap a row for the full picture.' : ''}</div>`;
     c.innerHTML = h;
     t.fresh = false;
 
@@ -301,8 +335,8 @@ const symState = { exchange: '', ticker: '', timeframe: '1d', candles: 150, acti
 let symData = {};
 let symSelected = null;
 
-const QUICK = ['NSE:RELIANCE', 'NSE:TCS', 'NSE:HDFCBANK', 'NSE:INFY', 'NASDAQ:AAPL', 'NASDAQ:NVDA', 'BINANCE:BTCUSDT'];
-$('quickChips').innerHTML = '<span class="chips-label">Try:</span>' +
+const QUICK = ['Reliance', 'TCS', 'HDFC Bank', 'Infosys', 'Apple', 'Tesla', 'Bitcoin'];
+$('quickChips').innerHTML = '<span class="chips-label">Popular:</span>' +
     QUICK.map(s => `<button type="button" class="chip" data-sym="${s}">${s}</button>`).join('');
 $('quickChips').addEventListener('click', e => {
     const b = e.target.closest('.chip'); if (!b) return;
@@ -315,6 +349,9 @@ $('quickChips').addEventListener('click', e => {
 const sgBox = $('suggestions');
 let sgItems = [], sgIndex = -1, sgTimer, sgSeq = 0;
 
+const KINDS = { stock: 'Stock', fund: 'Fund', etf: 'Fund', index: 'Index', crypto: 'Crypto', spot: 'Crypto', swap: 'Crypto', futures: 'Futures', forex: 'Currency', cfd: 'CFD', dr: 'Stock', bond: 'Bond' };
+const kindName = t => KINDS[t] || (t ? t.charAt(0).toUpperCase() + t.slice(1) : '');
+
 function closeSuggestions() {
     sgBox.hidden = true; sgIndex = -1;
     $('symbolInput').setAttribute('aria-expanded', 'false');
@@ -323,7 +360,7 @@ function paintSuggestions(items, emptyMsg) {
     sgItems = items;
     sgIndex = -1;
     sgBox.innerHTML = items.length
-        ? items.map((r, i) => `<li role="option" id="sg-${i}" data-i="${i}"><div class="sg-main"><div class="sg-sym">${esc(r.exchange)}:${esc(r.symbol)}</div><div class="sg-desc">${esc(r.description || '')}</div></div><div class="sg-meta">${esc(r.type || '')}${r.country ? ' · ' + esc(r.country) : ''}</div></li>`).join('')
+        ? items.map((r, i) => `<li role="option" id="sg-${i}" data-i="${i}"><div class="sg-main"><div class="sg-sym">${esc(r.description || r.symbol)}</div><div class="sg-desc">${esc(r.exchange)}:${esc(r.symbol)}</div></div><div class="sg-meta">${esc(kindName(r.type))}${r.country ? ' · ' + esc(r.country) : ''}</div></li>`).join('')
         : `<li class="sg-empty">${esc(emptyMsg)}</li>`;
     sgBox.hidden = false;
     $('symbolInput').setAttribute('aria-expanded', 'true');
@@ -345,8 +382,8 @@ $('symbolInput').addEventListener('input', e => {
         const seq = ++sgSeq;
         try {
             const r = await api(`/api/search?${qs({ q, limit: 10 })}`);
-            if (seq === sgSeq && document.activeElement === $('symbolInput')) paintSuggestions(r.data, 'No matches. Try another name or the EXCHANGE:TICKER format.');
-        } catch { if (seq === sgSeq) paintSuggestions([], 'Search is unavailable. Type EXCHANGE:TICKER, e.g. NSE:RELIANCE.'); }
+            if (seq === sgSeq && document.activeElement === $('symbolInput')) paintSuggestions(r.data, 'No match yet. Try the company\'s short name, like "Infosys".');
+        } catch { if (seq === sgSeq) paintSuggestions([], 'Search is not available right now. You can still type a code like NSE:RELIANCE.'); }
     }, 250);
 });
 $('symbolInput').addEventListener('keydown', e => {
@@ -362,15 +399,31 @@ $('symbolInput').addEventListener('keydown', e => {
 sgBox.addEventListener('mousedown', e => { const li = e.target.closest('li[data-i]'); if (li) { e.preventDefault(); pickSuggestion(+li.dataset.i); } });
 document.addEventListener('click', e => { if (!e.target.closest('.search-field')) closeSuggestions(); });
 
-/** Work out exchange + ticker from what the user typed or picked. */
+/** Work out exchange + ticker from what the user typed or picked. Also returns close alternatives. */
 async function resolveSymbol() {
-    if (symSelected) return symSelected;
-    const raw = val('symbolInput').toUpperCase().replace(/\s+/g, '');
-    if (raw.includes(':')) { const [exchange, ticker] = raw.split(':'); return exchange && ticker ? { exchange, ticker } : null; }
-    const r = await api(`/api/search?${qs({ q: raw, limit: 1 })}`);
-    const first = r.data[0];
-    return first ? { exchange: first.exchange, ticker: first.symbol } : null;
+    if (symSelected) return { ...symSelected, alternatives: [] };
+    const raw = val('symbolInput');
+    const compact = raw.toUpperCase().replace(/\s+/g, '');
+    if (compact.includes(':')) { const [exchange, ticker] = compact.split(':'); return exchange && ticker ? { exchange, ticker, alternatives: [] } : null; }
+    const r = await api(`/api/resolve?${qs({ q: raw })}`);
+    const best = r.data.best;
+    return best ? { exchange: best.exchange, ticker: best.symbol, alternatives: r.data.alternatives || [], typed: raw } : null;
 }
+
+function paintDidYouMean(pick) {
+    const box = $('didYouMean');
+    const alts = (pick.alternatives || []).filter(a => a.type !== 'futures').slice(0, 4);
+    if (!pick.typed || !alts.length) { box.hidden = true; return; }
+    box.innerHTML = `Showing <strong>${esc(pick.exchange)}:${esc(pick.ticker)}</strong> for "${esc(pick.typed)}". Meant something else? ` +
+        alts.map(a => `<button type="button" class="chip" data-ex="${esc(a.exchange)}" data-t="${esc(a.symbol)}" title="${esc(a.description || '')}">${esc(a.description ? a.description.slice(0, 28) : a.full_symbol)} <small>${esc(a.full_symbol)}</small></button>`).join(' ');
+    box.hidden = false;
+}
+$('didYouMean').addEventListener('click', e => {
+    const b = e.target.closest('.chip'); if (!b) return;
+    symSelected = { exchange: b.dataset.ex, ticker: b.dataset.t };
+    $('symbolInput').value = `${b.dataset.ex}:${b.dataset.t}`;
+    $('searchForm').requestSubmit();
+});
 
 $('searchForm').addEventListener('submit', async e => {
     e.preventDefault();
@@ -378,13 +431,14 @@ $('searchForm').addEventListener('submit', async e => {
     setLoading('searchBtn', true);
     try {
         const pick = await resolveSymbol();
-        if (!pick) { toast('Symbol not found. Try a different name or EXCHANGE:TICKER.', 'error'); return; }
+        if (!pick) { toast("We couldn't find that. Try the company's short name, like Infosys.", 'error'); return; }
         Object.assign(symState, pick, {
             timeframe: val('timeframe'),
             candles: Math.min(5000, Math.max(5, parseInt(val('candles'), 10) || 150)),
             ohlcv: null, ohlcvKey: '',
         });
         $('symbolInput').value = `${pick.exchange}:${pick.ticker}`;
+        paintDidYouMean(pick);
         history.replaceState(null, '', `#symbol=${pick.exchange}:${pick.ticker}`);
 
         $('symbolEmpty').hidden = true;
@@ -394,12 +448,15 @@ $('searchForm').addEventListener('submit', async e => {
         $('ohlcv').innerHTML = '';
 
         const base = `${symState.exchange}/${symState.ticker}`;
-        const [o, f, i] = await Promise.allSettled([
+        await glossLoaded;
+        const [o, f, i, qt] = await Promise.allSettled([
             api(`/api/overview/${base}`),
             api(`/api/fundamentals/${base}`),
             api(`/api/indicators/${base}?${qs({ timeframe: symState.timeframe })}`),
+            api(`/api/quote/${base}`),
         ]);
         symData = {
+            quote: qt.status === 'fulfilled' ? qt.value.data : null,
             overview: o.status === 'fulfilled' ? o.value.data : null,
             fundamentals: f.status === 'fulfilled' ? f.value.data : null,
             indicators: i.status === 'fulfilled' ? i.value.data : null,
@@ -408,13 +465,13 @@ $('searchForm').addEventListener('submit', async e => {
         if (!symData.overview && !symData.fundamentals && !symData.indicators) {
             $('symbolHead').innerHTML = '';
             ['overview', 'fundamentals', 'indicators'].forEach(id => { $(id).innerHTML = errorBox(err ? err.reason.message : 'No data found.'); });
-            toast(`No data for ${pick.exchange}:${pick.ticker}. Check the exchange and ticker.`, 'error');
+            toast(`We couldn't load ${pick.exchange}:${pick.ticker}. Try another name.`, 'error');
             return;
         }
         renderSymbolHead();
         renderOverview();
-        renderGrid('fundamentals', symData.fundamentals, 'Fundamental data is not available for this symbol.');
-        renderGrid('indicators', symData.indicators, 'Indicator data is not available for this symbol.');
+        renderGrid('fundamentals', symData.fundamentals, "Company numbers aren't available for this one. That's normal for coins, indexes and some funds.");
+        renderGrid('indicators', symData.indicators, "Advanced readings aren't available for this one.");
         selectTab(symState.activeTab, true);
     } catch (err) {
         toast(err.message, 'error');
@@ -426,34 +483,70 @@ $('searchForm').addEventListener('submit', async e => {
 const priceCcy = () => symData.overview?.price_currency || symData.overview?.currency || 'USD';
 const fundCcy = () => symData.overview?.currency || symData.fundamentals?.currency || 'USD';
 
+function freshnessTag(q) {
+    if (!q) return '';
+    if (q.realtime) return '<span class="tag tag-live" title="Updates the moment trades happen">Live</span>';
+    if (q.delayed) return `<span class="tag tag-delayed" title="${esc(termTip('delayed'))}">Delayed ${q.delay_seconds ? Math.round(q.delay_seconds / 60) + ' min' : ''}</span>`;
+    return `<span class="tag" title="${esc(termTip('delayed'))}">${esc(q.freshness || '')}</span>`;
+}
+
 function renderSymbolHead() {
     const d = symData.overview || {};
+    const q = symData.quote;
     const tvUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symState.exchange + ':' + symState.ticker)}`;
     $('symbolHead').innerHTML = `
-        <div><div class="sh-name">${esc(d.description || symState.ticker)}</div><div class="sh-sym">${esc(symState.exchange)}:${esc(symState.ticker)}${d.type ? ' · ' + esc(d.type) : ''}</div></div>
+        <div><div class="sh-name">${esc(d.description || q?.description || symState.ticker)}</div><div class="sh-sym">${esc(symState.exchange)}:${esc(symState.ticker)}${d.type ? ' · ' + esc(kindName(d.type)) : ''}</div></div>
         <div class="sh-price">${isNum(d.close) ? price(d.close, priceCcy(), true) : '—'}</div>
-        <div>${badge(d.change)} <span class="sh-sub">${isNum(d.change_abs) ? (d.change_abs > 0 ? '+' : '') + price(d.change_abs, priceCcy()) : ''}</span></div>
-        <a class="sh-link" href="${tvUrl}" target="_blank" rel="noopener noreferrer">Open on TradingView &#8599;</a>`;
+        <div>${badge(d.change)} <span class="sh-sub">${isNum(d.change_abs) ? (d.change_abs > 0 ? '+' : '') + price(d.change_abs, priceCcy()) : ''} today</span> ${freshnessTag(q)}</div>
+        <a class="sh-link" href="${tvUrl}" target="_blank" rel="noopener noreferrer">See on TradingView &#8599;</a>`;
+}
+
+/** A few plain sentences that say what the numbers mean. */
+function plainSummary(d, q) {
+    const name = d.description || symState.ticker, ccy = priceCcy(), out = [];
+    if (isNum(d.close)) {
+        let move = '';
+        if (isNum(d.change)) {
+            move = d.change === 0 ? ", unchanged from yesterday's close"
+                : `, ${d.change > 0 ? 'up' : 'down'} ${Math.abs(d.change).toFixed(2)}% from yesterday's close`;
+        }
+        out.push(`${name} last traded at <strong>${price(d.close, ccy, true)}</strong>${move}.`);
+    }
+    if (q) {
+        if (q.realtime) out.push('This price is live.');
+        else if (q.delayed) out.push(`This price is about <strong>${q.delay_seconds ? Math.round(q.delay_seconds / 60) : 15} minutes behind</strong> the market. That is normal for free data.`);
+    }
+    const hi = d.price_52_week_high, lo = d.price_52_week_low, c = d.close;
+    if (isNum(hi) && isNum(lo) && isNum(c) && hi > lo) {
+        const p = (c - lo) / (hi - lo);
+        const where = p < 0.2 ? 'near the bottom of' : p > 0.8 ? 'near the top of' : 'in the middle of';
+        out.push(`Over the past year it has ranged from ${price(lo, ccy, true)} to ${price(hi, ccy, true)}. Today it is <strong>${where} that range</strong>, ${(((hi - c) / hi) * 100).toFixed(0)}% below its high.`);
+    }
+    if (isNum(d.volume) && d.volume > 0) out.push(`<strong>${volume(d.volume, ccy)}</strong> shares have changed hands today.`);
+    if (isNum(d.market_cap_basic)) out.push(`The whole company is valued at <strong>${money(d.market_cap_basic, fundCcy())}</strong> (its "market cap").`);
+    if (isNum(d.price_earnings_ttm) && d.price_earnings_ttm > 0) out.push(`Its P/E is ${d.price_earnings_ttm.toFixed(1)}: investors are paying about ${sym(fundCcy())}${d.price_earnings_ttm.toFixed(0)} for every ${sym(fundCcy())}1 of yearly profit.`);
+    if (!out.length) return '';
+    return `<div class="plain-summary"><div class="group-title">In plain words</div><ul>${out.map(x => `<li>${x}</li>`).join('')}</ul><p class="hint">This is information, not advice. Tap any number below to see what it means.</p></div>`;
 }
 
 // ── Overview: grouped and price-action first ───────────────────────
 const OVERVIEW_GROUPS = [
-    ['Price action', ['open', 'high', 'low', 'close', 'change_from_open', 'volume', 'Value.Traded', 'price_52_week_high', 'price_52_week_low', 'Volatility.D', 'Volatility.W', 'Volatility.M', 'ATR']],
-    ['Performance', ['Perf.W', 'Perf.1M', 'Perf.3M', 'Perf.6M', 'Perf.YTD', 'Perf.Y']],
-    ['Valuation', ['market_cap_basic', 'price_earnings_ttm', 'earnings_per_share_basic_ttm', 'earnings_per_share_diluted_ttm', 'price_book_fq', 'price_sales_ttm', 'dividends_yield', 'beta_1_year']],
-    ['Profile', ['sector', 'industry', 'country', 'exchange', 'type', 'subtype', 'employees']],
+    ['Today', ['open', 'high', 'low', 'close', 'change_from_open', 'volume', 'Value.Traded', 'Volatility.D']],
+    ['How it has done', ['Perf.W', 'Perf.1M', 'Perf.3M', 'Perf.6M', 'Perf.YTD', 'Perf.Y', 'price_52_week_high', 'price_52_week_low', 'Volatility.W', 'Volatility.M', 'ATR']],
+    ['Size and value', ['market_cap_basic', 'price_earnings_ttm', 'earnings_per_share_basic_ttm', 'earnings_per_share_diluted_ttm', 'price_book_fq', 'price_sales_ttm', 'dividends_yield', 'beta_1_year']],
+    ['About the company', ['sector', 'industry', 'country', 'exchange', 'type', 'subtype', 'employees']],
 ];
 const INDICATOR_KEYS = new Set(['RSI', 'MACD.macd', 'MACD.signal', 'Stoch.K', 'Stoch.D', 'CCI20', 'ADX', 'Recommend.All']);
 
 function renderOverview() {
     const d = symData.overview;
     const c = $('overview');
-    if (!d) { c.innerHTML = errorBox('Overview is not available for this symbol.'); return; }
+    if (!d) { c.innerHTML = errorBox("We couldn't load the summary. Please try again."); return; }
 
-    let h = '';
-    if (isNum(d.high) && isNum(d.low) && d.high > d.low && isNum(d.close)) h += rangeBar("Day's range", d.low, d.high, d.close);
+    let h = plainSummary(d, symData.quote);
+    if (isNum(d.high) && isNum(d.low) && d.high > d.low && isNum(d.close)) h += rangeBar("Today's range (lowest to highest)", d.low, d.high, d.close);
     if (isNum(d.price_52_week_high) && isNum(d.price_52_week_low) && d.price_52_week_high > d.price_52_week_low && isNum(d.close))
-        h += rangeBar('52-week range', d.price_52_week_low, d.price_52_week_high, d.close);
+        h += rangeBar('Past year (lowest to highest)', d.price_52_week_low, d.price_52_week_high, d.close);
 
     const used = new Set(['close', 'change', 'change_abs', 'symbol', 'name', 'description']);
     OVERVIEW_GROUPS.forEach(([title, keys]) => {
@@ -461,7 +554,7 @@ function renderOverview() {
         if (cards) h += `<div class="group"><div class="group-title">${title}</div><div class="data-grid">${cards}</div></div>`;
     });
     const rest = Object.keys(d).filter(k => !used.has(k) && k !== 'currency' && k !== 'price_currency' && !INDICATOR_KEYS.has(k) && d[k] != null && typeof d[k] !== 'object');
-    if (rest.length) h += `<div class="group"><div class="group-title">Other</div><div class="data-grid">${rest.map(k => card(k, d[k])).join('')}</div></div>`;
+    if (rest.length) h += `<div class="group"><div class="group-title">More details</div><div class="data-grid">${rest.map(k => card(k, d[k])).join('')}</div></div>`;
     c.innerHTML = h;
     applyGridFilter();
 }
@@ -481,7 +574,10 @@ function card(k, v) {
         else if (isMoneyKey(k)) text = money(v, k === 'Value.Traded' ? priceCcy() : fundCcy());
         else text = plain(v);
     } else { text = String(v); cls = 'text'; }
-    return `<div class="data-card" data-search="${esc((label(k) + ' ' + k).toLowerCase())}" title="Click to copy"><div class="data-label">${esc(label(k))}</div><div class="data-value ${cls}" data-raw="${esc(v)}">${esc(text)}</div></div>`;
+    const term = GLOSS.field_terms[k], note = term && GLOSS.terms[term] ? GLOSS.terms[term].plain : '';
+    const search = esc((label(k) + ' ' + k + ' ' + (note ? GLOSS.terms[term].title : '')).toLowerCase());
+    const attrs = note ? ' role="button" tabindex="0" aria-expanded="false" title="Tap to see what this means"' : '';
+    return `<div class="data-card${note ? ' explainable' : ''}" data-search="${search}"${attrs}><div class="data-label">${esc(label(k))}${note ? ' <span class="info" aria-hidden="true">i</span>' : ''}</div><div class="data-value ${cls}">${esc(text)}</div>${note ? `<div class="data-note" hidden>${esc(note)}</div>` : ''}</div>`;
 }
 
 function renderGrid(id, data, emptyMsg) {
@@ -489,15 +585,23 @@ function renderGrid(id, data, emptyMsg) {
     if (!data) { c.innerHTML = errorBox(emptyMsg); return; }
     const entries = Object.entries(data).filter(([k, v]) => v != null && typeof v !== 'object' && k !== 'currency' && k !== 'price_currency');
     if (!entries.length) { c.innerHTML = `<div class="no-data">${esc(emptyMsg)}</div>`; return; }
-    c.innerHTML = `<div class="data-grid">${entries.map(([k, v]) => card(k, v)).join('')}</div>`;
+    c.innerHTML = (id === 'indicators' ? '<p class="info-banner">Advanced: these readings are calculated from past prices and are mainly used by traders. If you are new, you can skip this tab.</p>' : '') +
+        `<div class="data-grid">${entries.map(([k, v]) => card(k, v)).join('')}</div>`;
     applyGridFilter();
 }
 
-// Click-to-copy on cards
-document.addEventListener('click', async e => {
-    const c = e.target.closest('.data-card'); if (!c) return;
-    const raw = c.querySelector('.data-value')?.dataset.raw;
-    try { await navigator.clipboard.writeText(raw); toast(`Copied ${raw}`, 'success'); } catch { /* clipboard not permitted */ }
+// Tap a number to see what it means
+function toggleCard(c) {
+    const note = c.querySelector('.data-note');
+    if (!note) return;
+    const open = note.hidden;
+    note.hidden = !open;
+    c.setAttribute('aria-expanded', open);
+    c.classList.toggle('open', open);
+}
+document.addEventListener('click', e => { const c = e.target.closest('.data-card.explainable'); if (c) toggleCard(c); });
+document.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.data-card.explainable')) { e.preventDefault(); toggleCard(e.target); }
 });
 
 function applyGridFilter() {
@@ -537,7 +641,7 @@ async function loadOHLCV() {
     const key = `${symState.exchange}:${symState.ticker}:${symState.timeframe}:${symState.candles}`;
     if (symState.ohlcvKey === key && symState.ohlcv) return;
     const c = $('ohlcv');
-    c.innerHTML = '<div class="info-banner">Connecting to TradingView for candle data. This can take 10 to 20 seconds.</div>' + skeleton(2);
+    c.innerHTML = '<div class="info-banner">Loading the price history. This can take 10 to 20 seconds.</div>' + skeleton(2);
     try {
         const res = await api(`/api/ohlcv/${symState.exchange}/${symState.ticker}?${qs({ timeframe: symState.timeframe, candles: symState.candles })}`);
         if (key !== `${symState.exchange}:${symState.ticker}:${symState.timeframe}:${symState.candles}`) return;
@@ -545,7 +649,7 @@ async function loadOHLCV() {
         symState.ohlcvKey = key;
         renderOHLCV();
     } catch (err) {
-        c.innerHTML = errorBox(err.message) + '<p class="hint" style="margin-top:10px;text-align:center">Switch tabs and come back to retry.</p>';
+        c.innerHTML = errorBox(err.message) + '<p class="hint" style="margin-top:10px;text-align:center">Switch to another tab and back to try again.</p>';
         symState.ohlcv = null; symState.ohlcvKey = '';
     }
 }
@@ -558,18 +662,20 @@ function fmtTs(ts) {
         : { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+const TF_NAMES = { '1m': 'minute', '5m': '5 minutes', '15m': '15 minutes', '30m': '30 minutes', '1h': 'hour', '4h': '4 hours', '1d': 'day', '1w': 'week', '1M': 'month' };
+
 function renderOHLCV() {
     const data = symState.ohlcv;
     const c = $('ohlcv');
     if (!data || !data.length) { c.innerHTML = '<div class="no-data">No candle data returned.</div>'; return; }
     const rows = [...data].reverse();
     const cols = [
-        { key: 'timestamp', label: 'Time', left: true, fmt: n => isNum(n) ? fmtTs(n) : '—' },
-        { key: 'open', label: 'Open', fmt: n => price(n, priceCcy()) }, { key: 'high', label: 'High', fmt: n => price(n, priceCcy()) },
-        { key: 'low', label: 'Low', fmt: n => price(n, priceCcy()) }, { key: 'close', label: 'Close', fmt: n => price(n, priceCcy()) },
-        { key: 'volume', label: 'Volume', fmt: n => volume(n, priceCcy()) },
+        { key: 'timestamp', label: 'When', left: true, fmt: n => isNum(n) ? fmtTs(n) : '—' },
+        { key: 'open', label: 'Opened', fmt: n => price(n, priceCcy()) }, { key: 'high', label: 'Highest', fmt: n => price(n, priceCcy()) },
+        { key: 'low', label: 'Lowest', fmt: n => price(n, priceCcy()) }, { key: 'close', label: 'Closed', fmt: n => price(n, priceCcy()) },
+        { key: 'volume', label: 'Shares traded', fmt: n => volume(n, priceCcy()) },
     ];
-    c.innerHTML = `<div class="info-banner">${data.length} candles · ${esc(symState.exchange)}:${esc(symState.ticker)} · ${esc(symState.timeframe)}. Newest first in the table.</div>
+    c.innerHTML = `<div class="info-banner">Each bar ("candle") shows one ${esc(TF_NAMES[symState.timeframe] || symState.timeframe)} of trading. <span class="pos">Green</span> means the price ended higher than it started, <span class="neg">red</span> means lower. The thin line shows the highest and lowest price. The small bars at the bottom show how much was traded.</div>
         <div class="chart-wrap"><canvas id="chart" aria-label="Candlestick chart"></canvas><canvas id="chartOverlay" aria-hidden="true"></canvas><div class="chart-tip" id="chartTip"></div></div>
         <div id="ohlcvTable"></div>`;
     renderTable('ohlcvTable', rows, cols);
@@ -708,13 +814,25 @@ function syncCategoryOptions() {
     });
     if ($('moversCategory').selectedOptions[0]?.disabled) $('moversCategory').value = 'gainers';
 }
-$('moversMarket').addEventListener('change', syncCategoryOptions);
+function moversExplanation() {
+    const market = GLOSS.catalog.markets.find(m => m.id === val('moversMarket'));
+    const what = GLOSS.catalog.categories[val('moversCategory')];
+    const bits = [];
+    if (what) bits.push(what + '.');
+    if (val('moversMarket').startsWith('stocks') || val('moversMarket') === 'crypto') bits.push('Only actively traded names on the main exchange are listed, so tiny or hard-to-trade ones do not crowd the list.');
+    if (market && market.data) bits.push(market.data);
+    return bits.join(' ');
+}
+function syncMoversHint() { $('moversHint').textContent = moversExplanation(); }
+$('moversMarket').addEventListener('change', () => { syncCategoryOptions(); syncMoversHint(); });
+$('moversCategory').addEventListener('change', syncMoversHint);
 syncCategoryOptions();
+glossLoaded.then(syncMoversHint);
 
 function stopAuto() { clearInterval(autoTimer); autoTimer = null; }
 $('moversAuto').addEventListener('change', e => {
     stopAuto();
-    if (e.target.checked) { autoTimer = setInterval(() => fetchMovers(true), 60000); toast('Auto-refresh on (every 60 seconds)', 'info'); }
+    if (e.target.checked) { autoTimer = setInterval(() => fetchMovers(true), 60000); toast('This list will refresh every minute.', 'info'); }
 });
 
 async function fetchMovers(quiet = false) {
@@ -726,12 +844,12 @@ async function fetchMovers(quiet = false) {
     try {
         const res = await api(`/api/movers?${qs(moversState)}`);
         $('moversResults').hidden = false;
-        const cat = moversState.category.replace(/-/g, ' ');
-        $('moversTitle').textContent = `${cat.charAt(0).toUpperCase() + cat.slice(1)} · ${$('moversMarket').selectedOptions[0].textContent}`;
+        $('moversTitle').textContent = `${$('moversCategory').selectedOptions[0].textContent} · ${$('moversMarket').selectedOptions[0].textContent}`;
+        $('moversExplain').textContent = moversExplanation();
         $('moversFilter').value = '';
         renderTable('moversContent', res.data, MOVER_COLS, { onRowClick: openSymbol });
         setDownloads('movers', '/api/download/movers', moversState);
-        if (!quiet) toast(`${res.data.length} rows loaded. Click a row to open the symbol.`, 'success');
+        if (!quiet) toast(res.data.length ? `Here are ${res.data.length}. Tap one to see the full picture.` : 'Nothing to show right now.', res.data.length ? 'success' : 'info');
     } catch (err) {
         if (!quiet) { $('moversResults').hidden = false; $('moversContent').innerHTML = errorBox(err.message); }
         toast(err.message, 'error');
@@ -750,13 +868,13 @@ const SCREENER_FIELDS = {
 };
 // Market cap is typed in the unit people use for that market: crore for India, millions elsewhere.
 const CAP_UNITS = {
-    india: { label: 'Min cap (₹ Cr)', mult: 1e7, ph: 'e.g. 5000', large: 50000 },
-    america: { label: 'Min cap ($ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
-    uk: { label: 'Min cap (£ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
-    canada: { label: 'Min cap (C$ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
-    germany: { label: 'Min cap (€ M)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    india: { label: 'Company size at least (₹ crore)', mult: 1e7, ph: 'e.g. 5000', large: 50000 },
+    america: { label: 'Company size at least ($ million)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    uk: { label: 'Company size at least (£ million)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    canada: { label: 'Company size at least (C$ million)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
+    germany: { label: 'Company size at least (€ million)', mult: 1e6, ph: 'e.g. 2000', large: 10000 },
 };
-const capUnit = () => CAP_UNITS[val('screenerMarket')] || { label: 'Min cap (raw)', mult: 1, ph: 'e.g. 1000000000', large: 1e10 };
+const capUnit = () => CAP_UNITS[val('screenerMarket')] || { label: 'Company size at least (in money units)', mult: 1, ph: 'e.g. 1000000000', large: 1e10 };
 function syncCapUnit() {
     const u = capUnit();
     $('screenerCapLabel').textContent = u.label;
@@ -766,29 +884,34 @@ $('screenerMarket').addEventListener('change', syncCapUnit);
 syncCapUnit();
 
 const PRESETS = [
-    { name: 'Active gainers', set: () => ({ screenerMinChange: 2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'desc' }) },
-    { name: 'Active losers', set: () => ({ screenerMaxChange: -2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'asc' }) },
-    { name: 'Volume leaders', set: () => ({ screenerSort: 'volume', screenerOrder: 'desc' }) },
-    { name: 'Large caps', set: () => ({ screenerMinCap: capUnit().large, screenerSort: 'market_cap_basic', screenerOrder: 'desc' }) },
-    { name: 'Under 100, liquid', set: () => ({ screenerMaxPrice: 100, screenerMinVol: 1000000, screenerSort: 'volume', screenerOrder: 'desc' }) },
+    { name: 'Rising today, actively traded', about: 'Up at least 2% with plenty of buying and selling.', set: () => ({ screenerMinChange: 2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'desc' }) },
+    { name: 'Falling today, actively traded', about: 'Down 2% or more with plenty of buying and selling.', set: () => ({ screenerMaxChange: -2, screenerMinVol: 500000, screenerSort: 'change', screenerOrder: 'asc' }) },
+    { name: 'Most talked-about', about: 'The stocks that changed hands the most today.', set: () => ({ screenerSort: 'volume', screenerOrder: 'desc' }) },
+    { name: 'Biggest companies', about: 'The largest companies by total value.', set: () => ({ screenerMinCap: capUnit().large, screenerSort: 'market_cap_basic', screenerOrder: 'desc' }) },
+    { name: 'Low-priced and busy', about: 'Priced under 100 per share and very actively traded.', set: () => ({ screenerMaxPrice: 100, screenerMinVol: 1000000, screenerSort: 'volume', screenerOrder: 'desc' }) },
 ];
-$('screenerPresets').innerHTML = '<span class="chips-label">Presets:</span>' +
-    PRESETS.map((p, i) => `<button type="button" class="chip" data-i="${i}">${p.name}</button>`).join('');
+$('screenerPresets').innerHTML = PRESETS.map((p, i) =>
+    `<button type="button" class="preset-card" data-i="${i}"><strong>${esc(p.name)}</strong><span>${esc(p.about)}</span></button>`).join('');
 $('screenerPresets').addEventListener('click', e => {
-    const b = e.target.closest('.chip'); if (!b) return;
+    const b = e.target.closest('.preset-card'); if (!b) return;
     resetScreener(false);
     Object.entries(PRESETS[+b.dataset.i].set()).forEach(([id, v]) => { $(id).value = v; });
+    pendingPreset = PRESETS[+b.dataset.i].name;
     $('screenerForm').requestSubmit();
 });
+let screenerLabel = '', pendingPreset = '';
 function resetScreener(clearResults = true) {
     Object.keys(SCREENER_FIELDS).forEach(id => { $(id).value = ''; });
+    if (clearResults) screenerLabel = '';
     $('screenerSort').value = 'volume'; $('screenerOrder').value = 'desc'; $('screenerLimit').value = 25;
     if (clearResults) $('screenerResults').hidden = true;
 }
-$('screenerReset').addEventListener('click', () => resetScreener());
+$('screenerReset').addEventListener('click', () => { screenerLabel = ''; resetScreener(); });
 
 $('screenerForm').addEventListener('submit', async e => {
     e.preventDefault();
+    screenerLabel = pendingPreset;
+    pendingPreset = '';
     const params = {
         market: val('screenerMarket'), sort_by: val('screenerSort'), sort_order: val('screenerOrder'),
         limit: Math.min(200, Math.max(1, parseInt(val('screenerLimit'), 10) || 25)),
@@ -803,11 +926,15 @@ $('screenerForm').addEventListener('submit', async e => {
         const res = await api(`/api/screener?${qs(params)}`);
         $('screenerResults').hidden = false;
         const total = res.totalCount ?? res.total;
-        $('screenerTitle').textContent = `${$('screenerMarket').selectedOptions[0].textContent} · ${res.data.length}${total ? ' of ' + Number(total).toLocaleString('en-US') : ''} matches`;
+        const found = total ? Number(total).toLocaleString('en-US') : res.data.length;
+        $('screenerTitle').textContent = `${screenerLabel || 'Matching stocks'} · ${$('screenerMarket').selectedOptions[0].textContent}`;
+        $('screenerExplain').textContent = res.data.length
+            ? `${found} stocks match your search. Showing the first ${res.data.length}. Tap a row to see the full picture.`
+            : 'No stocks match. Try loosening one of the rules.';
         $('screenerFilter').value = '';
         renderTable('screenerContent', res.data, SCREENER_COLS, { onRowClick: openSymbol });
         setDownloads('screener', '/api/download/screener', params);
-        toast(`${res.data.length} results. Click a row to open the symbol.`, 'success');
+        toast(res.data.length ? `Found ${found} matching stocks.` : 'Nothing matches those rules.', res.data.length ? 'success' : 'info');
     } catch (err) {
         $('screenerResults').hidden = false;
         $('screenerContent').innerHTML = errorBox(err.message);

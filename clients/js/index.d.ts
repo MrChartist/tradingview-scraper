@@ -24,6 +24,8 @@ export interface Quote {
   industry?: string | null;
   update_mode: string | null;
   /** true when the price is streaming in real time */
+  /** plain-English freshness: "real time", "15 min delayed", "end of day" */
+  freshness: string;
   realtime: boolean;
   /** true when the price is delayed; see delay_seconds */
   delayed: boolean;
@@ -32,7 +34,7 @@ export interface Quote {
 }
 
 export interface Candle { time: number; datetime: string; open: number; high: number; low: number; close: number; volume: number | null }
-export interface SymbolHit { exchange: string; symbol: string; description: string; type: string; country: string | null; currency: string | null }
+export interface SymbolHit { exchange: string; symbol: string; description: string; type: string; country: string | null; currency: string | null; primary?: boolean }
 export interface NewsItem { id: string; title: string; provider: string; source: string; published_at: number; url: string }
 export interface Condition { field: string; op: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq' | 'in' | 'between'; value: unknown }
 export interface Meta { request_id: string; count?: number; not_found?: string[]; [key: string]: unknown }
@@ -48,7 +50,7 @@ export class UpstreamError extends MarketApiError {}
 export class ConnectionFailed extends MarketApiError {}
 
 export interface ClientOptions {
-  baseUrl?: string; apiKey?: string; timeoutMs?: number; maxRetries?: number;
+  baseUrl?: string; apiKey?: string; timeoutMs?: number; maxRetries?: number; autoResolve?: boolean;
   fetch?: typeof fetch; WebSocket?: any;
 }
 export interface StreamOptions {
@@ -59,8 +61,12 @@ export interface StreamOptions {
 }
 export interface LiveHandle { subscribe(symbols: string | string[]): void; unsubscribe(symbols: string | string[]): void; close(): void }
 
-export class MarketClient {
+export class TickvaleClient {
   constructor(options?: ClientOptions);
+  resolve(text: string): Promise<{ query: string; best: SymbolHit & { full_symbol: string }; alternatives: Array<SymbolHit & { full_symbol: string }> }>;
+  fullSymbol(text: string): Promise<string>;
+  markets(): Promise<Row>;
+  glossary(): Promise<Record<string, { title: string; plain: string }>>;
   health(): Promise<{ status: string; version: string }>;
   status(): Promise<Row>;
   quotes(symbols: string | string[]): Promise<Quote[]>;
@@ -78,3 +84,6 @@ export class MarketClient {
   dividends(options?: { markets?: string | string[]; from?: string; to?: string; limit?: number }): Promise<Row[]>;
   stream(symbols: string | string[], options?: StreamOptions): LiveHandle;
 }
+
+/** Original name, kept so existing code keeps working. */
+export const MarketClient: typeof TickvaleClient;

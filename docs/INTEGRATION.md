@@ -1,9 +1,11 @@
 # Integrating your product
 
+New to markets? Start with [START_HERE.md](START_HERE.md).
+
 This service is a **bridge**: your product talks to one stable, documented API, and the server worries about where the data comes from. Keep that boundary and you can change the data source later without touching your product.
 
 ```text
- your product ──► SDK / HTTP ──►  Open Market Terminal API  ──►  data source (today: TradingView public endpoints)
+ your product ──► SDK / HTTP ──►  Tickvale API  ──►  data source (today: TradingView public endpoints)
  (web, mobile,     /v1 contract     auth · limits · cache         swappable: only api/services.py and api/live.py
   bots, jobs)      stable schema    currency · freshness flags    know about the source
 ```
@@ -25,9 +27,9 @@ Put it behind HTTPS (Caddy, nginx, a cloud load balancer). Keep one worker: the 
 Python:
 
 ```python
-from open_market_client import MarketClient
+from tickvale import TickvaleClient
 
-client = MarketClient("https://api.example.com", api_key=KEY)
+client = TickvaleClient("https://api.example.com", api_key=KEY)
 client.quotes(["NSE:RELIANCE", "NASDAQ:AAPL"])
 client.candles("NSE:RELIANCE", timeframe="1d", limit=200, as_dataframe=True)
 client.screener("india", [{"field": "market_cap_basic", "op": "gte", "value": 5e11}], limit=20)
@@ -39,9 +41,9 @@ async for quote in client.stream(["BINANCE:BTCUSDT", "NSE:TCS"]):   # reconnects
 JavaScript:
 
 ```js
-import { MarketClient } from 'open-market-client';
+import { TickvaleClient } from 'tickvale';
 
-const client = new MarketClient({ baseUrl: 'https://api.example.com', apiKey: process.env.MARKET_KEY });
+const client = new TickvaleClient({ baseUrl: 'https://api.example.com', apiKey: process.env.MARKET_KEY });
 const quotes = await client.quotes(['NSE:RELIANCE', 'NASDAQ:AAPL']);
 const live = client.stream(['BINANCE:BTCUSDT'], { onQuote: q => render(q) });
 ```

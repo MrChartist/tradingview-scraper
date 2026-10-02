@@ -1,4 +1,4 @@
-# open-market-client (Python)
+# tickvale (Python)
 
 ```bash
 pip install ./clients/python            # REST only
@@ -6,9 +6,9 @@ pip install "./clients/python[live,pandas]"
 ```
 
 ```python
-from open_market_client import MarketClient, RateLimitError
+from tickvale import TickvaleClient, RateLimitError
 
-client = MarketClient("https://api.example.com", api_key="...")
+client = TickvaleClient("https://api.example.com", api_key="...")
 print(client.quote("NSE:RELIANCE")["price"])
 df = client.candles("NSE:RELIANCE", "1d", 200, as_dataframe=True)
 

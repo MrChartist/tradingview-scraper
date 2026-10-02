@@ -47,10 +47,22 @@ def delay_info(update_mode: Optional[str]) -> dict:
     """update_mode looks like 'streaming', 'delayed_streaming_900' or 'endofday'."""
     mode = update_mode or ""
     m = re.search(r"delayed_streaming_(\d+)", mode)
+    seconds = int(m.group(1)) if m else None
+    if mode == "streaming":
+        freshness = "real time"
+    elif seconds is not None:
+        freshness = f"{seconds // 60} min delayed" if seconds >= 60 else f"{seconds} s delayed"
+    elif mode.startswith("delayed"):
+        freshness = "delayed"
+    elif "endofday" in mode or "end_of_day" in mode:
+        freshness = "end of day"
+    else:
+        freshness = "unknown"
     return {
         "realtime": mode == "streaming",
         "delayed": mode.startswith("delayed"),
-        "delay_seconds": int(m.group(1)) if m else None,
+        "delay_seconds": seconds,
+        "freshness": freshness,
     }
 
 
