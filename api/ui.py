@@ -7,7 +7,9 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from api import operations as ops
 from api import services as svc
+from api.errors import ApiError
 from api.glossary import CATALOG, GLOSSARY, FIELD_TERMS
 
 Fmt = Literal["csv", "json"]
@@ -243,3 +245,49 @@ def download_screener(
     r = screen_market(market, sort_by, sort_order, limit, min_price, max_price,
                       min_volume, min_change, max_change, min_market_cap, main_only)
     return _send(r["data"], f"{market}_screener", fmt)
+
+
+# ───────────────────────────────────────────────────────────────────
+#  STRATEGY TEST (historical backtest, and paper tests that keep running)
+#  Paper tests from the web page are only allowed on a server without API keys (your own machine or
+#  private network): on a public server anyone could start them, so use the keyed /v1 API there.
+# ───────────────────────────────────────────────────────────────────
+def _test_ctx(request: Request) -> ops.Context:
+    st = request.app.state
+    return ops.Context(settings=st.settings, hub=st.hub, auto_resolve=True, owner="web", paper=getattr(st, "paper", None))
+
+
+def _run(request: Request, name: str, params: dict) -> dict:
+    try:
+        r = ops.execute(name, params, _test_ctx(request))
+    except ApiError as e:
+        raise HTTPException(status_code=400, detail=f"{e.message} {e.hint or ''}".strip())
+    return {"status": "success", "data": r.data, "meta": r.meta}
+
+
+def _local_only(request: Request) -> None:
+    if request.app.state.settings.auth_enabled:
+        raise HTTPException(status_code=400, detail="Paper tests are switched off on the public page. Use the API with your key (POST /v1/paper).")
+
+
+@router.post("/backtest")
+def ui_backtest(request: Request, body: ops.BacktestParams):
+    return _run(request, "backtest", body.model_dump())
+
+
+@router.get("/paper")
+def ui_paper_list(request: Request):
+    _local_only(request)
+    return _run(request, "paper_list", {})
+
+
+@router.post("/paper")
+def ui_paper_start(request: Request, body: ops.PaperStartParams):
+    _local_only(request)
+    return _run(request, "paper_start", body.model_dump())
+
+
+@router.delete("/paper/{run_id}")
+def ui_paper_stop(request: Request, run_id: str, delete: bool = False):
+    _local_only(request)
+    return _run(request, "paper_stop", {"id": run_id, "delete": delete})

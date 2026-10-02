@@ -52,7 +52,7 @@ class NseProvider(Provider):
     def __init__(self, settings: Optional[Settings] = None, live: Optional[McpClient] = None, eod: Optional[McpClient] = None):
         s = settings or Settings()
         self.live = live or McpClient(s.nse_live_url, timeout=20)
-        self.eod = eod or McpClient(s.nse_eod_url, timeout=60)
+        self.eod = eod or McpClient(s.nse_eod_url, timeout=30)
 
     def health(self) -> Dict:
         return {"ok": True, "live": self.live.url, "eod": self.eod.url, "refresh_seconds": REFRESH_SECONDS}
@@ -108,7 +108,7 @@ class NseProvider(Provider):
 
     def _bulk(self, symbols: List[str]) -> Tuple[List[Dict], List[str]]:
         by_ticker = {nse_ticker(s.split(":", 1)[1]): s for s in symbols}
-        payload = self.eod.call("get_bulk_quote", {"symbols": list(by_ticker)}, timeout=60)
+        payload = self.eod.call("get_bulk_quote", {"symbols": list(by_ticker)}, timeout=30)
         found = []
         for q in (payload or {}).get("quotes", []):
             symbol = by_ticker.get(q.get("symbol"))
@@ -137,7 +137,7 @@ class NseProvider(Provider):
         end = india.last_trading_day().isoformat()
         rows: Dict[int, Dict] = {}
         for _ in range(8):                                 # the server answers in chunks; walk back until we have enough
-            payload = self.eod.call("get_stock_history", {"symbol": nse_ticker(ticker), "months": months, "endDate": end}, timeout=90)
+            payload = self.eod.call("get_stock_history", {"symbol": nse_ticker(ticker), "months": months, "endDate": end}, timeout=40)
             for r in (payload or {}).get("data", []):
                 ts = india.day_start_epoch(r.get("date"))
                 if ts is not None and r.get("close") is not None:
@@ -178,7 +178,7 @@ class NseProvider(Provider):
 
     # ── things only NSE's official data gives us ──────────────────
     def corporate_actions(self, exchange: str, ticker: str, date_from: str, date_to: str) -> List[Dict]:
-        payload = self.eod.call("get_corporate_actions", {"symbol": nse_ticker(ticker), "fromDate": date_from, "toDate": date_to}, timeout=60)
+        payload = self.eod.call("get_corporate_actions", {"symbol": nse_ticker(ticker), "fromDate": date_from, "toDate": date_to}, timeout=30)
         if isinstance(payload, dict) and "error" in payload:
             raise NotSupported
         return [{"ex_date": a.get("exDate"), "type": a.get("actionType"), "purpose": a.get("purpose"),
@@ -195,7 +195,7 @@ class NseProvider(Provider):
                 while day.weekday() >= 5:
                     day -= datetime.timedelta(days=1)
         for asked in candidates:
-            payload = self.eod.call("get_market_breadth", {"date": asked}, timeout=60)
+            payload = self.eod.call("get_market_breadth", {"date": asked}, timeout=30)
             if isinstance(payload, dict) and payload.get("total_stocks"):
                 return {"date": payload.get("date", asked), "stocks": payload["total_stocks"], "advances": payload.get("advances"),
                         "declines": payload.get("declines"), "unchanged": payload.get("unchanged"),

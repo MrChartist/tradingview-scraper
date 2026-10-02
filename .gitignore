@@ -70,3 +70,8 @@ clients.json
 
 # conftest.py ends in "test.py", so the rule above would hide it
 !tests/conftest.py
+
+# Saved paper tests
+data/
+!api/backtest.py
+!tests/test_backtest.py

@@ -214,7 +214,8 @@ class Session:
         self.settings = settings
         self.version = version
         self.hub: QuoteHub = ws.app.state.hub
-        self.ctx = Context(settings=settings, hub=self.hub, auto_resolve=True)
+        self.ctx = Context(settings=settings, hub=self.hub, auto_resolve=True,
+                           paper=getattr(ws.app.state, "paper", None))
         self.policy = guard.policy(None)
         self.who = "?"
         self.state: Dict[str, Any] = {}
@@ -261,6 +262,7 @@ class Session:
         self.quote_sub = Subscription(self.who)
         self.policy = self.guard.policy(self.who)
         self.ctx.policy = self.policy
+        self.ctx.owner = str(self.who) if self.who and self.who != "?" else "open"
         allowed, _, reset = self.guard.limiter.hit(self.who, self.guard.limit_for(self.who))
         if not allowed:
             return await self._refuse(4429, ApiError(429, "Rate limit exceeded.", hint=f"Wait {reset} seconds."))

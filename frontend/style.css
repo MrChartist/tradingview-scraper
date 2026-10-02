@@ -358,3 +358,15 @@ th[title] { text-decoration: none; }
 @keyframes tickDown { 0% { color: var(--neg); text-shadow: 0 0 14px var(--neg); } 100% { color: inherit; text-shadow: none; } }
 .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pos); margin-left: 4px; vertical-align: middle; animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+
+/* ── Test a strategy ── */
+.test-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 14px 0; }
+.test-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.test-card .tc-label { font-family: var(--font-label); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); }
+.test-card strong { font-family: var(--font-head); font-size: 1.25rem; }
+.test-card .pos { color: var(--pos); } .test-card .neg { color: var(--neg); }
+.test-cautions { margin: 0 0 14px; padding-left: 18px; color: var(--text-dim); font-size: .9rem; }
+.paper-card { border-top: 1px solid var(--border); padding: 14px 0; }
+.paper-card:first-child { border-top: 0; }
+.paper-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.paper-head .btn { margin-left: auto; }

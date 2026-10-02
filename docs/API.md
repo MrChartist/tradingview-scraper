@@ -42,6 +42,8 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 | POST | `/v1/screener` | Your own conditions, see below |
 | GET | `/v1/calendar/earnings?markets=india&from=2026-10-01&to=2026-10-14` | Earnings events |
 | GET | `/v1/symbols/{exchange}/{ticker}/corporate-actions` | Dividends, splits, bonus (needs the `nse` source) |
+| POST | `/v1/backtest` | Test a price-action rule on past candles ([BACKTEST.md](BACKTEST.md)) |
+| POST/GET/DELETE | `/v1/paper`, `/v1/paper/{id}` | Paper tests that keep running on new candles |
 | GET | `/v1/markets/breadth` | Advances / declines for the day (needs the `nse` source) |
 | GET | `/v1/calendar/dividends?markets=india` | Dividend events |
 | GET (SSE) | `/v1/stream/quotes?symbols=...` | Continuous quotes |

@@ -141,6 +141,11 @@ class Settings:
     nse_live_url: str = "https://mcp.nseindia.in/cmmkt/mcp"
     nse_eod_url: str = "https://mcp.nseindia.in/bhavcopy/cm/mcp"
 
+    # Paper forward-tests (no real orders): where they are saved, how often they are checked, 0 = switch off.
+    paper_file: str = "data/paper.json"
+    paper_poll_seconds: int = 60
+    paper_max_runs_per_client: int = 20
+
     @property
     def auth_enabled(self) -> bool:
         return bool(self.api_keys or self.hashed_keys)
@@ -172,6 +177,9 @@ def load_settings() -> Settings:
         plugins=_list("PLUGINS"),
         providers=_list("PROVIDERS") or ["tradingview"],
         allow_trading=_bool("ALLOW_TRADING", False),
+        paper_file=os.getenv("PAPER_FILE", "data/paper.json"),
+        paper_poll_seconds=_int("PAPER_POLL_SECONDS", 60),
+        paper_max_runs_per_client=_int("PAPER_MAX_RUNS_PER_CLIENT", 20),
         nse_live_url=os.getenv("NSE_MCP_LIVE_URL", "https://mcp.nseindia.in/cmmkt/mcp"),
         nse_eod_url=os.getenv("NSE_MCP_EOD_URL", "https://mcp.nseindia.in/bhavcopy/cm/mcp"),
     )

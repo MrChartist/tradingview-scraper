@@ -3,6 +3,7 @@
 Run:  uvicorn api.main:app --port 8000
 Docs: /docs (interactive), /redoc.  Configuration: environment variables, see .env.example.
 """
+import asyncio
 import importlib
 import logging
 import time
@@ -18,7 +19,9 @@ from fastapi.staticfiles import StaticFiles
 from api import services as svc
 from api.config import Settings, load_settings
 from api.errors import install_handlers
+from api import operations as ops
 from api import providers
+from api.paper import PaperBook, run_forever
 from api.live import QuoteHub
 from api.security import Guard
 from api.v1 import StreamSlots, build_router
@@ -66,10 +69,16 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.hub = QuoteHub(max_symbols=settings.hub_max_upstream_symbols)
+        paper_task = None
+        if settings.paper_poll_seconds > 0:
+            app.state.paper = PaperBook(settings.paper_file, settings.paper_max_runs_per_client)
+            paper_task = asyncio.create_task(run_forever(app.state.paper, ops.paper_fetcher(settings), settings.paper_poll_seconds))
         if not settings.auth_enabled:
             logging.getLogger("market_terminal").warning(
                 "API_KEYS is not set: the API is in OPEN mode. Set API_KEYS before exposing it publicly.")
         yield
+        if paper_task:
+            paper_task.cancel()
         await app.state.hub.close()
 
     app = FastAPI(title="Tickvale API", description=DESCRIPTION, version=VERSION,
@@ -79,7 +88,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     install_handlers(app)
 
     if settings.cors_origins:
-        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST"],
+        app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["GET", "POST", "DELETE"],
                            allow_headers=["X-API-Key", "Authorization", "Content-Type"],
                            expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Request-ID"])
 

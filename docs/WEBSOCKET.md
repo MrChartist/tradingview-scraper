@@ -53,6 +53,8 @@ Send `{"id": "<anything>", "op": "<operation>", "params": {...}}`. You get back 
 | `movers` | `market`, `category`, `limit` | Gainers, losers, most active |
 | `screener` | `market`, `conditions`, `columns`, `sort_by`, `sort_order`, `limit`, `main_only` | Stocks matching your rules |
 | `earnings`, `dividends` | `markets`, `from`, `to`, `limit` | Calendar events |
+| `backtest` | `symbol`, `strategy`, `timeframe`, `settings`, `rr`, `cost_pct`, `max_hold`, `limit` | Test a rule on past candles |
+| `paper_start`, `paper_list`, `paper_get`, `paper_stop` | `symbol`, `strategy`, ... / `id` | Paper tests that keep running |
 | `corporate_actions` | `symbol` | Dividends, splits, bonus (needs the `nse` source) |
 | `market_breadth` | `date` (optional) | Advances / declines (needs the `nse` source) |
 | `markets`, `glossary` | none | Valid values and plain-language terms |

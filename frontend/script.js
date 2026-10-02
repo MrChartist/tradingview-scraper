@@ -180,7 +180,7 @@ $('welcomeClose').addEventListener('click', () => { $('welcome').hidden = true; 
 // ═══════════════════════════════════════════════════════════════════
 //  SECTION NAVIGATION
 // ═══════════════════════════════════════════════════════════════════
-const MODES = ['symbol', 'movers', 'screener'];
+const MODES = ['symbol', 'movers', 'screener', 'test'];
 function switchMode(mode, { updateHash = true } = {}) {
     if (!MODES.includes(mode)) mode = 'symbol';
     document.querySelectorAll('.mode-btn').forEach(b => {
@@ -195,6 +195,7 @@ function switchMode(mode, { updateHash = true } = {}) {
     });
     if (updateHash && mode !== 'symbol') history.replaceState(null, '', '#' + mode);
     if (mode !== 'movers') stopAuto();
+    if (mode === 'test') startPaperPolling(); else stopPaperPolling();
 }
 document.querySelectorAll('.mode-btn').forEach(b => b.addEventListener('click', () => switchMode(b.dataset.mode)));
 
@@ -227,15 +228,16 @@ function symbolCell(r) {
     return `<span class="sym">${esc(desc)}</span><span class="sym-sub">${esc(r.symbol)}</span>`;
 }
 
-function renderTable(id, rows, cols, { onRowClick } = {}) {
+function renderTable(id, rows, cols, { onRowClick, noun } = {}) {
     const c = $(id);
     if (!rows || !rows.length) {
+        if (noun) { c.innerHTML = `<div class="no-data"><strong>No ${noun}s were taken.</strong><br>The rule did not trigger on these candles. Try more history, another symbol or a smaller candle size.</div>`; delete tables[id]; return; }
         c.innerHTML = '<div class="no-data"><strong>Nothing matches right now.</strong><br>Try loosening a rule, picking another market, or coming back when the market is open.</div>';
         delete tables[id];
         return;
     }
     // Add any extra columns the first row carries (keeps CSV and table in step).
-    tables[id] = { rows, cols, sortKey: null, sortDir: 'desc', filter: '', onRowClick, fresh: true };
+    tables[id] = { rows, cols, sortKey: null, sortDir: 'desc', filter: '', onRowClick, noun, fresh: true };
     paintTable(id);
 }
 
@@ -279,7 +281,7 @@ function paintTable(id) {
         });
         h += '</tr>';
     });
-    h += `</tbody></table></div><div class="row-count">${rows.length}${rows.length !== t.rows.length ? ` of ${t.rows.length}` : ''} ${rows.length === 1 ? 'stock' : 'stocks'}${t.onRowClick ? '. Tap a row for the full picture.' : ''}</div>`;
+    h += `</tbody></table></div><div class="row-count">${rows.length}${rows.length !== t.rows.length ? ` of ${t.rows.length}` : ''} ${t.noun ? (rows.length === 1 ? t.noun : t.noun + 's') : (rows.length === 1 ? 'stock' : 'stocks')}${t.onRowClick ? '. Tap a row for the full picture.' : ''}</div>`;
     c.innerHTML = h;
     t.fresh = false;
 
@@ -1008,6 +1010,125 @@ $('screenerForm').addEventListener('submit', async e => {
         setLoading('screenerBtn', false);
     }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+//  TEST A STRATEGY (backtest + paper tests that keep running)
+// ═══════════════════════════════════════════════════════════════════
+async function apiSend(method, url, body) {
+    let res;
+    try {
+        res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    } catch { throw new Error("Can't reach the server. Check your internet connection and try again."); }
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+        const d = j.detail;
+        throw new Error(typeof d === 'string' ? d : (FRIENDLY[res.status] || 'Something went wrong. Please try again.'));
+    }
+    return j;
+}
+
+const RULE_TEXT = {
+    breakout: 'Buys when a candle closes above the highest high of the last 20 candles and volume is clearly above normal. Enters at the next candle\'s open. Stop below the last 3 candles.',
+    retest: 'Waits for a breakout above the last 20 candles, then a pullback to that level. Buys when a green candle holds the level. Stop under the pullback.',
+    candle: 'Looks for a bullish engulfing, hammer or inside-bar break, but only when price sits at the lowest low of the last 10 candles (support).',
+    orb: 'Marks the first 30 minutes of the day (India time). Buys the first close above that range\'s high before 2:30 pm. Stop at the range low. Closed before the market ends.',
+};
+const timeLabel = ts => new Date(ts * 1000).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+const TRADE_COLS = [
+    { key: 'entry_time', label: 'Bought', left: true, fmtRow: r => timeLabel(r.entry_time) },
+    { key: 'entry', label: 'Price in', fmtRow: r => r.entry.toFixed(2) },
+    { key: 'exit', label: 'Price out', fmtRow: r => r.exit.toFixed(2) },
+    { key: 'return_pct', label: 'Result', fmt: pct, tone: true },
+    { key: 'r', label: 'In risk units', fmt: n => `${n > 0 ? '+' : ''}${n}R`, tone: true },
+    { key: 'reason', label: 'Ended by', fmtRow: r => r.reason },
+    { key: 'bars', label: 'Candles held' },
+];
+
+function statCards(st, extra = '') {
+    const n = st.trades;
+    const card = (label, value, tone = '') => `<div class="test-card"><span class="tc-label">${label}</span><strong class="${tone}">${value}</strong></div>`;
+    if (!n) return card('Trades', '0') + extra;
+    return card('Trades', n) + card('Won', st.win_rate_pct != null ? `${st.win_rate_pct}%` : '—')
+        + card('Total result', pct(st.total_return_pct), st.total_return_pct >= 0 ? 'pos' : 'neg')
+        + card('Worst fall', `-${st.max_drawdown_pct}%`, 'neg')
+        + card('Average per R', st.expectancy_r != null ? `${st.expectancy_r > 0 ? '+' : ''}${st.expectancy_r}R` : '—', st.expectancy_r >= 0 ? 'pos' : 'neg')
+        + extra;
+}
+
+function testBody() {
+    return {
+        symbol: val('testSymbol'), timeframe: val('testTimeframe'), strategy: val('testStrategy'),
+        rr: parseFloat(val('testRr')) || 2, cost_pct: Math.max(0, parseFloat(val('testCost')) || 0),
+    };
+}
+
+function paintRule() {
+    const orb = val('testStrategy') === 'orb';
+    $('testRule').textContent = RULE_TEXT[val('testStrategy')];
+    const tf = $('testTimeframe');
+    if (orb && tf.value === '1d') tf.value = '15m';
+    [...tf.options].forEach(o => { o.disabled = orb && o.value === '1d'; });
+}
+$('testStrategy').addEventListener('change', paintRule);
+paintRule();
+
+$('testForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    setLoading('testBtn', true);
+    try {
+        const res = await apiSend('POST', '/api/backtest', { ...testBody(), limit: val('testTimeframe') === '1d' ? 1250 : 2000, show_trades: 100 });
+        const d = res.data;
+        $('testResults').hidden = false;
+        $('testTitle').textContent = `${d.symbol} · ${$('testStrategy').selectedOptions[0].textContent}`;
+        $('testExplain').textContent = `Tested on ${d.candles_tested} candles, from ${d.from.slice(0, 10)} to ${d.to.slice(0, 10)}.`;
+        const bh = d.stats.buy_and_hold_pct;
+        $('testCards').innerHTML = statCards(d.stats, isNum(bh) ? `<div class="test-card"><span class="tc-label">Just holding</span><strong class="${bh >= 0 ? 'pos' : 'neg'}">${pct(bh)}</strong></div>` : '');
+        $('testCautions').innerHTML = (res.meta.caution || []).map(c => `<li>${esc(c)}</li>`).join('');
+        renderTable('testTrades', d.trades.slice().reverse(), TRADE_COLS, { noun: 'trade' });
+        $('testKeep').disabled = false;
+    } catch (err) {
+        $('testResults').hidden = false;
+        $('testCards').innerHTML = ''; $('testCautions').innerHTML = ''; $('testTrades').innerHTML = errorBox(err.message);
+        toast(err.message, 'error');
+    } finally { setLoading('testBtn', false); }
+});
+
+$('testKeep').addEventListener('click', async () => {
+    try {
+        await apiSend('POST', '/api/paper', testBody());
+        toast('Running. It will watch new candles and write down pretend trades.', 'success');
+        loadPaper();
+    } catch (err) { toast(err.message, 'error'); }
+});
+
+let paperTimer = null;
+function paperCard(r) {
+    const open = r.open_position ? `Holding since ${timeLabel(r.open_position.entry_time)} at ${r.open_position.entry.toFixed(2)} (stop ${r.open_position.stop.toFixed(2)}, target ${r.open_position.target.toFixed(2)})`
+        : r.waiting_to_enter ? 'Signal seen. Will enter at the next candle\'s open.' : 'Waiting for a signal.';
+    const checked = r.last_checked ? `Checked ${timeLabel(r.last_checked)}` : 'Starting…';
+    return `<div class="paper-card">
+        <div class="paper-head"><strong>${esc(r.symbol)}</strong> <span class="sym-sub">${esc(r.strategy)} · ${esc(r.timeframe)} · ${esc(r.status)}</span>
+        <button class="btn small" data-stop="${esc(r.id)}" type="button">${r.status === 'running' ? 'Stop' : 'Remove'}</button></div>
+        <div class="test-cards">${statCards(r.stats)}</div>
+        <p class="hint">${esc(open)}</p><p class="hint">${esc(checked)}${r.error ? ' · ' + esc(r.error) : ''}</p></div>`;
+}
+async function loadPaper() {
+    try {
+        const res = await apiSend('GET', '/api/paper');
+        $('paperPanel').hidden = !res.data.length;
+        $('paperList').innerHTML = res.data.map(paperCard).join('');
+    } catch { $('paperPanel').hidden = true; }
+}
+$('paperList').addEventListener('click', async e => {
+    const id = e.target.dataset && e.target.dataset.stop;
+    if (!id) return;
+    try {
+        await apiSend('DELETE', `/api/paper/${encodeURIComponent(id)}?delete=${e.target.textContent === 'Remove'}`);
+        loadPaper();
+    } catch (err) { toast(err.message, 'error'); }
+});
+function startPaperPolling() { loadPaper(); clearInterval(paperTimer); paperTimer = setInterval(loadPaper, 30000); }
+function stopPaperPolling() { clearInterval(paperTimer); paperTimer = null; }
 
 // ═══════════════════════════════════════════════════════════════════
 //  INIT (restore from URL hash)

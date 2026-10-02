@@ -6,6 +6,7 @@ The session is created on first use and re-created if the server forgets it.
 import json
 import logging
 import threading
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -19,6 +20,8 @@ class McpError(Exception):
 
 
 class McpClient:
+    COOLDOWN = 45
+
     def __init__(self, url: str, client_name: str = "tickvale", client_version: str = "1.0", timeout: float = 30):
         self.url = url
         self.timeout = timeout
@@ -27,6 +30,7 @@ class McpClient:
         self._session_id: Optional[str] = None
         self._lock = threading.Lock()
         self._next_id = 0
+        self._down_until = 0.0
 
     # ── wire format ──────────────────────────────────────────────
     @staticmethod
@@ -60,8 +64,19 @@ class McpClient:
 
     # ── public ───────────────────────────────────────────────────
     def call(self, tool: str, arguments: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Any:
-        """Run a tool and return what it produced (parsed JSON when the text is JSON, else the text)."""
-        timeout = timeout or self.timeout
+        """Run a tool and return what it produced (parsed JSON when the text is JSON, else the text).
+
+        After a timeout or a server-side failure the server is left alone for COOLDOWN seconds, so a slow day at
+        the source costs one slow request, not one per caller."""
+        if time.time() < self._down_until:
+            raise McpError(f"{self.url} failed a moment ago; skipping it for a short while")
+        try:
+            return self._call(tool, arguments, timeout or self.timeout)
+        except requests.RequestException:
+            self._down_until = time.time() + self.COOLDOWN
+            raise
+
+    def _call(self, tool: str, arguments: Optional[Dict[str, Any]], timeout: float) -> Any:
         for attempt in (1, 2):
             with self._lock:
                 if self._session_id is None:

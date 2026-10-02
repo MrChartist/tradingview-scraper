@@ -53,7 +53,8 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
     def run(request: Request, name: str, params: Optional[dict] = None) -> dict:
         who = getattr(request.state, "client", None)          # set by the key check; absent on public help routes
         ctx = Context(settings=settings, hub=request.app.state.hub, auto_resolve=False,
-                      policy=guard.policy(who) if who else None)
+                      policy=guard.policy(who) if who else None, owner=who or "open",
+                      paper=getattr(request.app.state, "paper", None))
         result = ops.execute(name, params, ctx)
         return envelope(request, result.data, **result.meta)
 
@@ -153,6 +154,27 @@ def build_router(guard: Guard, settings: Settings, version: str) -> APIRouter:
     @router.post("/screener", tags=["markets"], dependencies=auth, summary="Screen a market with your own conditions")
     def screener(request: Request, body: ScreenerParams):
         return run(request, "screener", body.model_dump())
+
+    # ── backtest and paper forward-tests (pretend trades only) ───
+    @router.post("/backtest", tags=["backtest"], dependencies=auth, summary="Test a price-action strategy on past candles")
+    def backtest(request: Request, body: ops.BacktestParams):
+        return run(request, "backtest", body.model_dump())
+
+    @router.post("/paper", tags=["backtest"], dependencies=auth, summary="Start a paper test that keeps running on new candles")
+    def paper_start(request: Request, body: ops.PaperStartParams):
+        return run(request, "paper_start", body.model_dump())
+
+    @router.get("/paper", tags=["backtest"], dependencies=auth, summary="Your paper tests")
+    def paper_list(request: Request):
+        return run(request, "paper_list", {})
+
+    @router.get("/paper/{run_id}", tags=["backtest"], dependencies=auth, summary="One paper test with its trades")
+    def paper_get(request: Request, run_id: str):
+        return run(request, "paper_get", {"id": run_id})
+
+    @router.delete("/paper/{run_id}", tags=["backtest"], dependencies=auth, summary="Stop (and remove) a paper test")
+    def paper_stop(request: Request, run_id: str, delete: bool = False):
+        return run(request, "paper_stop", {"id": run_id, "delete": delete})
 
     # ── calendar ──────────────────────────────────────────────────
     def calendar(kind: str):

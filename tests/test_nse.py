@@ -321,3 +321,13 @@ def test_nse_is_listed_in_status_with_its_capabilities():
         sources = c.get("/v1/status", headers=H).json()["data"]["sources"]
     nse = next(s for s in sources if s["name"] == "nse")
     assert nse["exchanges"] == ["NSE"] and {"quotes", "candles", "movers", "corporate_actions", "market_breadth"} == set(nse["capabilities"])
+
+
+def test_mcp_pauses_after_a_timeout():
+    client = McpClient("fake://x")
+    with mock.patch.object(client, "_call", side_effect=requests.Timeout("slow")) as call:
+        with pytest.raises(requests.Timeout):
+            client.call("t")
+        with pytest.raises(McpError):
+            client.call("t")                  # skipped without touching the network again
+    assert call.call_count == 1

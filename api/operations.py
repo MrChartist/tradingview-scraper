@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Type, Union
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from typing_extensions import Annotated
 
+from api import backtest as bt
 from api import markets_india as india
 from api import services as svc
 from api.config import ClientPolicy, Settings
@@ -38,6 +39,8 @@ class Context:
     hub: Any = None
     auto_resolve: bool = False
     policy: Optional[ClientPolicy] = None       # what this client may do; None = everything
+    owner: str = "open"                         # who is asking (the key's name); paper tests belong to their owner
+    paper: Any = None                           # the PaperBook, when paper tests are switched on
 
     @property
     def max_symbols(self) -> int:
@@ -452,6 +455,119 @@ def _calendar(kind: str, p: CalendarParams) -> Result:
         svc.logger.warning("Calendar failed: %s", e)
         raise ApiError(502, "Calendar data is unavailable right now.")
     return Result(rows, {"count": len(rows), "source": used[0], "note": "Monetary values are in fundamental_currency_code (usually USD)."})
+
+
+# ── backtest and paper forward-test ────────────────────────────────
+class BacktestParams(SymbolParams):
+    timeframe: str = "1d"
+    strategy: Literal["breakout", "retest", "orb", "candle"] = "breakout"
+    settings: Dict[str, Union[int, float, str]] = Field(default_factory=dict, description="Strategy settings; see the 'strategies' list in the reply of the 'markets' operation or docs/BACKTEST.md.")
+    limit: int = Field(750, ge=50, le=5000, description="How many candles of history to test on.")
+    rr: float = Field(2.0, gt=0.2, le=10, description="Target distance as a multiple of the risk (stop distance).")
+    cost_pct: float = Field(0.1, ge=0, le=5, description="Round-trip cost per trade in percent (brokerage, taxes, slippage).")
+    max_hold: int = Field(30, ge=1, le=500, description="Exit at the close after this many candles if neither stop nor target was hit.")
+    show_trades: int = Field(100, ge=0, le=500, description="How many of the most recent trades to return.")
+
+
+class PaperStartParams(SymbolParams):
+    timeframe: str = "1d"
+    strategy: Literal["breakout", "retest", "orb", "candle"] = "breakout"
+    settings: Dict[str, Union[int, float, str]] = Field(default_factory=dict)
+    rr: float = Field(2.0, gt=0.2, le=10)
+    cost_pct: float = Field(0.1, ge=0, le=5)
+    max_hold: int = Field(30, ge=1, le=500)
+
+
+class PaperIdParams(_Params):
+    id: str = Field(..., min_length=4, max_length=32)
+
+
+class PaperStopParams(PaperIdParams):
+    delete: bool = False
+
+
+class PaperListParams(_Params):
+    pass
+
+
+def _strategy_check(strategy: str, timeframe: str, settings: dict) -> dict:
+    svc.check_timeframe(timeframe)
+    if bt.STRATEGIES[strategy]["intraday_only"] and bt.TIMEFRAME_SECONDS[timeframe] >= 86400:
+        raise ApiError(400, f"'{strategy}' needs an intraday timeframe such as 5m or 15m.",
+                       hint="Opening range breakout reads the first minutes of each trading day.")
+    try:
+        return bt.merged_params(strategy, settings)
+    except ValueError as e:
+        raise ApiError(422, str(e))
+
+
+def _candle_rows(symbol: str, timeframe: str, limit: int, ctx: Context) -> List[dict]:
+    return op_candles(CandlesParams(symbol=symbol, timeframe=timeframe, limit=limit), ctx).data
+
+
+def paper_fetcher(settings: Settings):
+    """What the background loop uses to get candles (plain names are not needed: runs store EXCHANGE:TICKER)."""
+    ctx = Context(settings=settings, auto_resolve=False)
+    return lambda symbol, timeframe, limit: _candle_rows(symbol, timeframe, limit, ctx)
+
+
+@operation("backtest", "Test a price-action strategy on past candles: trades, win rate, drawdown. Nothing is traded.", BacktestParams)
+def op_backtest(p, ctx):
+    params = _strategy_check(p.strategy, p.timeframe, p.settings)
+    symbol = resolve_name(p.symbol, ctx)
+    tf = bt.TIMEFRAME_SECONDS[p.timeframe]
+    rows = _candle_rows(symbol, p.timeframe, p.limit, ctx)
+    rows, splits = bt.adjust_for_splits(rows)
+    out = bt.run_backtest(rows, p.strategy, params, rr=p.rr, cost_pct=p.cost_pct, max_hold=p.max_hold, tf_seconds=tf)
+    trades = out["trades"][-p.show_trades:] if p.show_trades else []
+    caution = []
+    if out["stats"]["trades"] < 30:
+        caution.append("Fewer than 30 trades: too few to trust. Test more candles or other symbols.")
+    if splits:
+        caution.append("Older prices were scaled for "+", ".join(f"a {e['ratio']} split/bonus" for e in splits)+
+                       " because this source gives prices as traded. Check it against your chart.")
+    caution.append("Past results do not predict future results. Paper test only; no orders are placed.")
+    return Result({"symbol": symbol, "timeframe": p.timeframe, "strategy": p.strategy, "settings": out["params"],
+                   "rr": p.rr, "cost_pct": p.cost_pct, "candles_tested": len(rows),
+                   "from": rows[0]["datetime"], "to": rows[-1]["datetime"], "stats": out["stats"], "trades": trades,
+                   "open_position": out["open_position"], "waiting_to_enter": out["pending_signal"],
+                   "adjusted_for": splits},
+                  {"count": len(trades), "caution": caution})
+
+
+def _book(ctx: Context):
+    if ctx.paper is None:
+        raise ApiError(501, "Paper tests are switched off on this server.",
+                       hint="The owner can switch them on by setting PAPER_POLL_SECONDS to 30 or more.")
+    return ctx.paper
+
+
+@operation("paper_start", "Start a paper test that keeps running on new candles and records pretend trades.", PaperStartParams)
+def op_paper_start(p, ctx):
+    book = _book(ctx)
+    params = _strategy_check(p.strategy, p.timeframe, p.settings)
+    symbol = resolve_name(p.symbol, ctx)
+    _candle_rows(symbol, p.timeframe, 60, ctx)         # fail now if the symbol has no data
+    run = book.start(ctx.owner, symbol, p.timeframe, p.strategy, params, rr=p.rr, cost_pct=p.cost_pct, max_hold=p.max_hold)
+    return Result(run, {"poll_seconds": ctx.settings.paper_poll_seconds,
+                        "note": "It starts from the next closed candle and checks every poll. Read it with paper_get."})
+
+
+@operation("paper_list", "Your paper tests with their running totals.", PaperListParams)
+def op_paper_list(p, ctx):
+    runs = _book(ctx).list(ctx.owner)
+    return Result(runs, {"count": len(runs)})
+
+
+@operation("paper_get", "One paper test: totals, open position and recent trades.", PaperIdParams)
+def op_paper_get(p, ctx):
+    book = _book(ctx)
+    return Result(book.view(book.get(ctx.owner, p.id)), {})
+
+
+@operation("paper_stop", "Stop a paper test (delete=true also removes it).", PaperStopParams)
+def op_paper_stop(p, ctx):
+    return Result(_book(ctx).stop(ctx.owner, p.id, p.delete), {})
 
 
 @operation("earnings", "Upcoming and recent earnings announcements.", CalendarParams)
