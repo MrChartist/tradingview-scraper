@@ -83,7 +83,29 @@ export class TickvaleClient {
   earnings(options?: { markets?: string | string[]; from?: string; to?: string; limit?: number }): Promise<Row[]>;
   dividends(options?: { markets?: string | string[]; from?: string; to?: string; limit?: number }): Promise<Row[]>;
   stream(symbols: string | string[], options?: StreamOptions): LiveHandle;
+  socket(options?: SocketOptions): TickvaleSocket;
 }
 
 /** Original name, kept so existing code keeps working. */
 export const MarketClient: typeof TickvaleClient;
+
+export interface SocketOptions { reconnect?: boolean; requestTimeoutMs?: number; maxBackoffMs?: number }
+export interface SubscribeReply { type: 'subscribed'; channel: string; symbols?: string[]; rejected?: Array<{ symbol: string; reason: string }>; resolved?: Record<string, string>; key?: string; interval?: number }
+export type SocketEvent = 'hello' | 'quote' | 'update' | 'connected' | 'disconnected' | 'error' | 'closed';
+
+export class TickvaleSocket {
+  hello: { service: string; version: string; operations: Array<{ name: string; summary: string; params: string[] }>; channels: Array<{ name: string; summary: string }>; limits: Record<string, number>; note: string } | null;
+  connect(): Promise<NonNullable<TickvaleSocket['hello']>>;
+  /** Run an operation, for example call('quotes', { symbols: ['reliance', 'bitcoin'] }). */
+  call<T = any>(op: string, params?: Record<string, unknown>): Promise<T>;
+  callFull<T = any>(op: string, params?: Record<string, unknown>): Promise<{ data: T; meta: Meta }>;
+  subscribe(channel?: string, params?: Record<string, unknown>): Promise<SubscribeReply>;
+  unsubscribe(channel?: string, params?: Record<string, unknown>): Promise<SubscribeReply>;
+  ping(): Promise<number>;
+  on(event: 'quote', fn: (quote: Quote) => void): () => void;
+  on(event: 'update', fn: (frame: { channel: string; key: string; data: Row[]; meta: Meta }) => void): () => void;
+  on(event: 'error', fn: (error: MarketApiError) => void): () => void;
+  on(event: SocketEvent, fn: (data?: any) => void): () => void;
+  quotes(): AsyncGenerator<Quote>;
+  close(): void;
+}

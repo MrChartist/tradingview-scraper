@@ -1,5 +1,7 @@
 # API reference (v1)
 
+> The WebSocket is the main interface: see [WEBSOCKET.md](WEBSOCKET.md). This page covers the same operations over REST.
+
 Base URL: wherever you deploy it, for example `https://api.example.com`. Interactive docs: `/docs`. Machine-readable contract: `/openapi.json`.
 
 ## Conventions
@@ -25,6 +27,7 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 | GET | `/v1/markets` | Valid markets, categories, timeframes and screener fields in plain language (no key) |
 | GET | `/v1/glossary` | What every market term means (no key) |
 | GET | `/v1/symbols/resolve?q=reliance` | Best `EXCHANGE:TICKER` for a name, plus alternatives. `country=IN` breaks ties (default from `DEFAULT_COUNTRY`) |
+| GET | `/v1/operations` | Every operation, including plugins (no key) |
 | GET | `/v1/symbols/search?q=reliance` | Matching symbols |
 | GET | `/v1/quotes?symbols=NSE:RELIANCE,NASDAQ:AAPL` | Latest quote for up to 100 symbols. `meta.not_found` lists unknown ones |
 | GET | `/v1/symbols/{exchange}/{ticker}` | Profile and key statistics |
@@ -37,7 +40,7 @@ Base URL: wherever you deploy it, for example `https://api.example.com`. Interac
 | GET | `/v1/calendar/earnings?markets=india&from=2026-10-01&to=2026-10-14` | Earnings events |
 | GET | `/v1/calendar/dividends?markets=india` | Dividend events |
 | GET (SSE) | `/v1/stream/quotes?symbols=...` | Continuous quotes |
-| WebSocket | `/v1/ws` | Continuous quotes, subscribe and unsubscribe on the fly |
+| WebSocket | `/v1/ws` | **Main interface.** Ask for anything and receive live quotes and lists on one connection |
 
 Timeframes: `1m 5m 15m 30m 1h 2h 4h 1d 1w 1M`. Movers markets: `stocks-india stocks-usa stocks-uk stocks-canada stocks-australia crypto forex`; categories `gainers losers most-active penny-stocks`, plus `pre-market-*` and `after-hours-*` for `stocks-usa` only.
 

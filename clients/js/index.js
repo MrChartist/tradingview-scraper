@@ -148,6 +148,14 @@ export class TickvaleClient {
   dividends({ markets = 'india', from, to, limit = 100 } = {}) { return this._get('/v1/calendar/dividends', { markets: csv(markets), from, to, limit }); }
 
   /**
+   * The WebSocket: one connection to ask for anything and receive live data.
+   *   const sock = client.socket(); await sock.connect();
+   *   await sock.call('quotes', { symbols: ['reliance', 'bitcoin'] });
+   *   sock.on('quote', q => render(q)); await sock.subscribe('quotes', { symbols: ['bitcoin'] });
+   */
+  socket(options) { return new TickvaleSocket(this, options); }
+
+  /**
    * Live quotes over WebSocket with automatic reconnect and re-subscribe.
    * Browsers cannot set headers on a WebSocket, so the key travels as ?api_key= there.
    * @returns {{ subscribe(symbols), unsubscribe(symbols), close() }}
@@ -191,6 +199,151 @@ export class TickvaleClient {
       unsubscribe(s) { const list = typeof s === 'string' ? [s] : s; list.forEach(x => wanted.delete(x)); send({ action: 'unsubscribe', symbols: list }); },
       close() { closed = true; clearTimeout(timer); socket?.close(); },
     };
+  }
+}
+
+
+const ERROR_CLASSES = { unauthorized: AuthError, rate_limited: RateLimitError, not_found: NotFoundError, upstream_error: UpstreamError };
+function socketError(frame) {
+  const Cls = ERROR_CLASSES[frame.code] || MarketApiError;
+  return new Cls(frame.message + (frame.hint ? ` Hint: ${frame.hint}` : ''), { status: frame.status ?? null, code: frame.code, retryAfter: frame.retry_after ?? null });
+}
+
+/**
+ * One WebSocket connection that answers requests and pushes live data. Reconnects by itself and
+ * subscribes again. Requests that were waiting when the connection dropped fail with ConnectionFailed.
+ * Events: hello, quote, update, connected, disconnected, error, closed.
+ */
+export class TickvaleSocket {
+  constructor(client, { reconnect = true, requestTimeoutMs = 60000, maxBackoffMs = 30000 } = {}) {
+    this.client = client;
+    this.reconnect = reconnect;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.maxBackoffMs = maxBackoffMs;
+    this.hello = null;
+    this._ws = null; this._closed = false; this._fatal = null; this._delay = 1000; this._first = true; this._timer = null;
+    this._ids = 0; this._pending = new Map(); this._waiters = []; this._handlers = new Map();
+    this._quoteSymbols = new Set(); this._channelSubs = new Map();
+  }
+
+  on(event, fn) {
+    if (!this._handlers.has(event)) this._handlers.set(event, new Set());
+    this._handlers.get(event).add(fn);
+    return () => this._handlers.get(event).delete(fn);
+  }
+  _emit(event, data) { for (const fn of this._handlers.get(event) || []) { try { fn(data); } catch { /* a handler's bug must not break the socket */ } } }
+
+  connect() {
+    if (this._fatal) return Promise.reject(this._fatal);
+    if (this.hello && this._ws && this._ws.readyState === 1) return Promise.resolve(this.hello);
+    return new Promise((resolve, reject) => {
+      this._waiters.push({ resolve, reject });
+      if (!this._ws && !this._timer) this._open();
+    });
+  }
+
+  _url() {
+    const key = this.client.apiKey ? `?api_key=${encodeURIComponent(this.client.apiKey)}` : '';
+    return this.client.baseUrl.replace(/^http/, 'ws') + '/v1/ws' + key;
+  }
+
+  _open() {
+    const WS = this.client._WebSocket;
+    if (!WS) throw new Error('No WebSocket available. Use Node 22+, a browser, or pass { WebSocket } from the "ws" package.');
+    const ws = new WS(this._url());
+    this._ws = ws;
+    ws.onmessage = ev => { let f; try { f = JSON.parse(ev.data); } catch { return; } this._onFrame(f); };
+    ws.onerror = () => {};     // onclose follows and handles the retry
+    ws.onclose = () => {
+      this._ws = null;
+      this._failPending(new ConnectionFailed('Connection lost.'));
+      if (this._fatal) { this._rejectWaiters(this._fatal); return this._emit('closed'); }
+      if (this._closed || !this.reconnect) { this._rejectWaiters(new ConnectionFailed('Connection closed.')); return this._emit('closed'); }
+      this._first = false;
+      this._emit('disconnected');
+      this._timer = setTimeout(() => { this._timer = null; this._open(); }, this._delay + Math.random() * 500);
+      this._delay = Math.min(this._delay * 2, this.maxBackoffMs);
+    };
+  }
+
+  _onFrame(f) {
+    const pending = f.id != null ? this._pending.get(String(f.id)) : undefined;
+    switch (f.type) {
+      case 'hello': {
+        this.hello = f; this._delay = 1000;
+        const replay = [];
+        if (this._quoteSymbols.size) replay.push({ channel: 'quotes', symbols: [...this._quoteSymbols] });
+        replay.push(...this._channelSubs.values());
+        for (const params of replay) this._send({ id: `resub${++this._ids}`, op: 'subscribe', params });
+        this._waiters.splice(0).forEach(w => w.resolve(f));
+        this._emit('hello', f);
+        if (!this._first) this._emit('connected');
+        break;
+      }
+      case 'quote': case 'update': this._emit(f.type, f.type === 'quote' ? f.data : f); break;
+      case 'error':
+        if (pending) { pending.reject(socketError(f)); }
+        else if (f.id == null && !this.hello && (f.code === 'unauthorized' || f.code === 'rate_limited')) { this._fatal = socketError(f); this._rejectWaiters(this._fatal); }
+        else this._emit('error', socketError(f));
+        break;
+      default: if (pending) pending.resolve(f);
+    }
+  }
+
+  _send(obj) { if (this._ws && this._ws.readyState === 1) this._ws.send(JSON.stringify(obj)); }
+  _rejectWaiters(err) { this._waiters.splice(0).forEach(w => w.reject(err)); }
+  _failPending(err) { for (const p of this._pending.values()) p.reject(err); this._pending.clear(); }
+
+  async _request(body) {
+    if (this._closed) throw new ConnectionFailed('The socket is closed.');
+    await this.connect();
+    const id = String(++this._ids);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this._pending.delete(id); reject(new MarketApiError(`No answer to '${body.op}' within ${this.requestTimeoutMs / 1000} seconds.`, { code: 'timeout' })); }, this.requestTimeoutMs);
+      this._pending.set(id, { resolve: f => { clearTimeout(timer); this._pending.delete(id); resolve(f); }, reject: e => { clearTimeout(timer); this._pending.delete(id); reject(e); } });
+      this._send({ id, ...body });
+    });
+  }
+
+  /** Run one operation; resolves to just the data. Rejects with a typed error. */
+  async call(op, params = {}) { return (await this._request({ op, params })).data; }
+  /** Like call(), but resolves to { data, meta }. */
+  async callFull(op, params = {}) { const f = await this._request({ op, params }); return { data: f.data, meta: f.meta || {} }; }
+
+  async subscribe(channel = 'quotes', params = {}) {
+    const reply = await this._request({ op: 'subscribe', params: { channel, ...params } });
+    if (channel === 'quotes') (reply.symbols || []).forEach(s => this._quoteSymbols.add(s));
+    else this._channelSubs.set(reply.key || JSON.stringify(params), { channel, ...params });
+    return reply;
+  }
+  async unsubscribe(channel = 'quotes', params = {}) {
+    const reply = await this._request({ op: 'unsubscribe', params: { channel, ...params } });
+    if (channel === 'quotes') (reply.symbols || []).forEach(s => this._quoteSymbols.delete(s));
+    else this._channelSubs.delete(reply.key);
+    return reply;
+  }
+  async ping() { const t = Date.now(); await this._request({ op: 'ping' }); return Date.now() - t; }
+
+  /** for await (const quote of socket.quotes()) { ... } — ends when the socket closes. */
+  async *quotes() {
+    const queue = []; let wake = null; let done = false;
+    const offQ = this.on('quote', q => { queue.push(q); wake?.(); });
+    const offC = this.on('closed', () => { done = true; wake?.(); });
+    try {
+      while (!done || queue.length) {
+        if (!queue.length) await new Promise(r => { wake = r; });
+        wake = null;
+        while (queue.length) yield queue.shift();
+      }
+    } finally { offQ(); offC(); }
+  }
+
+  close() {
+    this._closed = true;
+    clearTimeout(this._timer);
+    this._failPending(new ConnectionFailed('Connection closed.'));
+    this._rejectWaiters(new ConnectionFailed('Connection closed.'));
+    if (this._ws) this._ws.close(); else this._emit('closed');
   }
 }
 

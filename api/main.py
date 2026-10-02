@@ -3,6 +3,7 @@
 Run:  uvicorn api.main:app --port 8000
 Docs: /docs (interactive), /redoc.  Configuration: environment variables, see .env.example.
 """
+import importlib
 import logging
 import time
 import uuid
@@ -19,7 +20,7 @@ from api.config import Settings, load_settings
 from api.errors import install_handlers
 from api.live import QuoteHub
 from api.security import Guard
-from api.v1 import build_router
+from api.v1 import StreamSlots, build_router
 
 VERSION = "3.0.0"
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -29,7 +30,8 @@ DESCRIPTION = """
 Market data for **stocks, crypto and forex** built on public TradingView endpoints.
 
 * **REST** under `/v1`: quotes, symbol profile, fundamentals, technicals, candles, news, movers, screener, calendar.
-* **Live**: `/v1/ws` (WebSocket) and `/v1/stream/quotes` (server-sent events).
+* **WebSocket (primary)**: `/v1/ws`. One connection to ask for anything and to receive live quotes and lists. Read the `hello` message it sends.
+* **Live over SSE**: `/v1/stream/quotes` for clients that cannot use WebSockets.
 * **Auth**: send `X-API-Key` (or `Authorization: Bearer`). Without configured keys the API runs in open mode.
 * **Freshness**: every quote says whether it is `realtime` or `delayed` (and by how many seconds). Exchanges such as NSE and NASDAQ are typically delayed 15 minutes without a paid data licence.
 
@@ -55,6 +57,9 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     for noisy in ("urllib3", "websockets", "websocket"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     svc.CACHE_TTL = settings.cache_ttl_seconds
+    for module in settings.plugins:           # fail fast: a broken plugin should stop the server, not hide
+        importlib.import_module(module)
+        logging.getLogger("market_terminal").info("Loaded plugin %s", module)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -68,6 +73,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app = FastAPI(title="Tickvale API", description=DESCRIPTION, version=VERSION,
                   openapi_tags=TAGS, lifespan=lifespan)
     app.state.settings = settings
+    app.state.slots = StreamSlots(settings.ws_max_clients_per_key)
     install_handlers(app)
 
     if settings.cors_origins:

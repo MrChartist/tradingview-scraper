@@ -87,3 +87,105 @@ test('screener posts a JSON body', async () => {
   assert.equal(calls[0].init.method, 'POST');
   assert.deepEqual([body.market, body.limit, body.conditions[0].op], ['india', 5, 'gt']);
 });
+
+// ── WebSocket client ────────────────────────────────────────────────
+import { TickvaleSocket, AuthError as SockAuthError } from './index.js';
+
+/** A scripted stand-in for WebSocket. `script(ws, frame)` plays the server. */
+function fakeSocketClass(script, log = []) {
+  return class FakeWS {
+    constructor(url) {
+      this.url = url; this.readyState = 0; this.sent = []; log.push(this);
+      queueMicrotask(() => { this.readyState = 1; script.onOpen?.(this, log.length); });
+    }
+    send(text) { const f = JSON.parse(text); this.sent.push(f); script.onFrame?.(this, f, log.length); }
+    close() { this.readyState = 3; queueMicrotask(() => this.onclose?.()); }
+    push(frame) { queueMicrotask(() => this.onmessage?.({ data: JSON.stringify(frame) })); }
+    drop() { this.readyState = 3; queueMicrotask(() => this.onclose?.()); }
+  };
+}
+const HELLO = { type: 'hello', service: 'tickvale', version: '3', operations: [], channels: [], limits: {}, note: '' };
+const tick = (ms = 5) => new Promise(r => setTimeout(r, ms));
+
+test('socket: call matches answers to requests by id and unwraps data', async () => {
+  const log = [];
+  const WebSocket = fakeSocketClass({
+    onOpen: ws => ws.push(HELLO),
+    onFrame: (ws, f) => { if (f.op === 'quotes') ws.push({ type: 'result', id: f.id, op: 'quotes', data: [{ symbol: 'NSE:TCS' }], meta: { count: 1 } }); },
+  }, log);
+  const sock = new TickvaleClient({ baseUrl: 'https://api.test', apiKey: 'k with space', WebSocket }).socket();
+  const hello = await sock.connect();
+  assert.equal(hello.service, 'tickvale');
+  assert.equal(log[0].url, 'wss://api.test/v1/ws?api_key=k%20with%20space');
+  assert.deepEqual(await sock.call('quotes', { symbols: ['reliance'] }), [{ symbol: 'NSE:TCS' }]);
+  assert.deepEqual((await sock.callFull('quotes', {})).meta, { count: 1 });
+  sock.close();
+});
+
+test('socket: error frames become typed errors and the socket stays usable', async () => {
+  const WebSocket = fakeSocketClass({
+    onOpen: ws => ws.push(HELLO),
+    onFrame: (ws, f) => ws.push(f.op === 'bad'
+      ? { type: 'error', id: f.id, code: 'not_found', message: 'Nothing matched', hint: 'Try another spelling' }
+      : { type: 'result', id: f.id, op: f.op, data: 'fine', meta: {} }),
+  });
+  const sock = new TickvaleClient({ baseUrl: 'https://api.test', WebSocket }).socket();
+  await assert.rejects(() => sock.call('bad'), e => e instanceof NotFoundError && /Try another spelling/.test(e.message));
+  assert.equal(await sock.call('good'), 'fine');
+  sock.close();
+});
+
+test('socket: rejected at connect with a bad key is fatal, not retried', async () => {
+  const log = [];
+  const WebSocket = fakeSocketClass({ onOpen: ws => { ws.push({ type: 'error', id: null, code: 'unauthorized', message: 'Invalid API key.' }); queueMicrotask(() => ws.drop()); } }, log);
+  const sock = new TickvaleClient({ baseUrl: 'https://api.test', apiKey: 'bad', WebSocket }).socket();
+  await assert.rejects(() => sock.connect(), SockAuthError);
+  await tick(30);
+  assert.equal(log.length, 1);
+  await assert.rejects(() => sock.call('markets'), SockAuthError);
+});
+
+test('socket: reconnects and subscribes again with the resolved symbols', async () => {
+  const log = [];
+  const WebSocket = fakeSocketClass({
+    onOpen: ws => ws.push(HELLO),
+    onFrame: (ws, f, n) => {
+      if (f.op === 'subscribe' && f.params.channel === 'quotes') {
+        ws.push({ type: 'subscribed', id: f.id, channel: 'quotes', symbols: ['BINANCE:BTCUSDT'], rejected: [], resolved: { bitcoin: 'BINANCE:BTCUSDT' } });
+        if (n === 2) ws.push({ type: 'quote', data: { symbol: 'BINANCE:BTCUSDT', price: 1 } });
+      }
+    },
+  }, log);
+  const sock = new TickvaleClient({ baseUrl: 'https://api.test', WebSocket }).socket({ maxBackoffMs: 10 });
+  const events = [];
+  ['disconnected', 'connected'].forEach(e => sock.on(e, () => events.push(e)));
+  const quotes = [];
+  sock.on('quote', q => quotes.push(q.price));
+  await sock.connect();
+  const reply = await sock.subscribe('quotes', { symbols: ['bitcoin'] });
+  assert.deepEqual(reply.resolved, { bitcoin: 'BINANCE:BTCUSDT' });
+  log[0].drop();
+  for (let i = 0; i < 400 && !quotes.length; i++) await tick(10);   // backoff is >= 1 s
+  assert.deepEqual(events, ['disconnected', 'connected']);
+  assert.deepEqual(log[1].sent.map(f => f.params), [{ channel: 'quotes', symbols: ['BINANCE:BTCUSDT'] }]);
+  assert.deepEqual(quotes, [1]);
+  sock.close();
+});
+
+test('socket: quotes() yields until the socket closes', async () => {
+  const WebSocket = fakeSocketClass({ onOpen: ws => { ws.push(HELLO); setTimeout(() => { ws.push({ type: 'quote', data: { price: 1 } }); ws.push({ type: 'quote', data: { price: 2 } }); }, 5); } });
+  const sock = new TickvaleClient({ baseUrl: 'https://api.test', WebSocket }).socket();
+  await sock.connect();
+  const got = [];
+  setTimeout(() => sock.close(), 60);
+  for await (const q of sock.quotes()) got.push(q.price);
+  assert.deepEqual(got, [1, 2]);
+});
+
+test('socket: a closed socket refuses new requests', async () => {
+  const WebSocket = fakeSocketClass({ onOpen: ws => ws.push(HELLO) });
+  const sock = new TickvaleClient({ baseUrl: 'https://api.test', WebSocket }).socket();
+  await sock.connect();
+  sock.close();
+  await assert.rejects(() => sock.call('markets'), ConnectionFailed);
+});

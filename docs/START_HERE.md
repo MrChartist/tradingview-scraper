@@ -45,13 +45,16 @@ const client = new TickvaleClient({ baseUrl: 'http://localhost:8000' });
 console.log(await client.quote('reliance'));
 ```
 
-Live prices:
+One connection for everything (asking and live prices), see [WEBSOCKET.md](WEBSOCKET.md):
 
 ```python
 import asyncio
 async def main():
-    async for q in client.stream(["bitcoin", "NSE:TCS"]):
-        print(q["symbol"], q["price"], q["freshness"])
+    async with client.socket() as sock:
+        print(await sock.call("quotes", symbols=["reliance", "bitcoin"]))      # ask
+        await sock.subscribe("quotes", symbols=["bitcoin", "NSE:TCS"])         # then listen
+        async for q in sock.quotes():
+            print(q["symbol"], q["price"], q["freshness"])
 asyncio.run(main())
 ```
 
@@ -68,7 +71,7 @@ asyncio.run(main())
 | Show news | `client.news("reliance")` |
 | Know when companies report profits | `client.earnings("india")` |
 | See valid markets, timeframes and filter fields | `client.markets()` |
-| Stream prices | `client.stream([...])` |
+| Stream prices | `sock.subscribe("quotes", symbols=[...])` on `client.socket()` |
 
 ## When something goes wrong
 

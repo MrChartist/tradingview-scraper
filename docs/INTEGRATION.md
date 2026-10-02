@@ -24,6 +24,8 @@ Put it behind HTTPS (Caddy, nginx, a cloud load balancer). Keep one worker: the 
 
 ## 2. Call it from your product
 
+The best way in is one WebSocket (see [WEBSOCKET.md](WEBSOCKET.md)); REST is there for simple jobs. To add your own operations or live feeds to the same connection, see [EXTENDING.md](EXTENDING.md).
+
 Python:
 
 ```python

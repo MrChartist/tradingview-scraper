@@ -463,6 +463,7 @@ $('searchForm').addEventListener('submit', async e => {
         };
         const err = [o, f, i].find(x => x.status === 'rejected');
         if (!symData.overview && !symData.fundamentals && !symData.indicators) {
+            stopLive();
             $('symbolHead').innerHTML = '';
             ['overview', 'fundamentals', 'indicators'].forEach(id => { $(id).innerHTML = errorBox(err ? err.reason.message : 'No data found.'); });
             toast(`We couldn't load ${pick.exchange}:${pick.ticker}. Try another name.`, 'error');
@@ -473,6 +474,7 @@ $('searchForm').addEventListener('submit', async e => {
         renderGrid('fundamentals', symData.fundamentals, "Company numbers aren't available for this one. That's normal for coins, indexes and some funds.");
         renderGrid('indicators', symData.indicators, "Advanced readings aren't available for this one.");
         selectTab(symState.activeTab, true);
+        startLive(`${symState.exchange}:${symState.ticker}`);
     } catch (err) {
         toast(err.message, 'error');
     } finally {
@@ -496,8 +498,8 @@ function renderSymbolHead() {
     const tvUrl = `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(symState.exchange + ':' + symState.ticker)}`;
     $('symbolHead').innerHTML = `
         <div><div class="sh-name">${esc(d.description || q?.description || symState.ticker)}</div><div class="sh-sym">${esc(symState.exchange)}:${esc(symState.ticker)}${d.type ? ' · ' + esc(kindName(d.type)) : ''}</div></div>
-        <div class="sh-price">${isNum(d.close) ? price(d.close, priceCcy(), true) : '—'}</div>
-        <div>${badge(d.change)} <span class="sh-sub">${isNum(d.change_abs) ? (d.change_abs > 0 ? '+' : '') + price(d.change_abs, priceCcy()) : ''} today</span> ${freshnessTag(q)}</div>
+        <div class="sh-price" id="shPrice">${isNum(d.close) ? price(d.close, priceCcy(), true) : '—'}</div>
+        <div><span id="shBadge">${badge(d.change)}</span> <span class="sh-sub" id="shChange">${isNum(d.change_abs) ? (d.change_abs > 0 ? '+' : '') + price(d.change_abs, priceCcy()) : ''} today</span> <span id="shFresh">${freshnessTag(q)}</span></div>
         <a class="sh-link" href="${tvUrl}" target="_blank" rel="noopener noreferrer">See on TradingView &#8599;</a>`;
 }
 
@@ -528,6 +530,69 @@ function plainSummary(d, q) {
     if (!out.length) return '';
     return `<div class="plain-summary"><div class="group-title">In plain words</div><ul>${out.map(x => `<li>${x}</li>`).join('')}</ul><p class="hint">This is information, not advice. Tap any number below to see what it means.</p></div>`;
 }
+
+// ── Live price over the WebSocket ──────────────────────────────────
+// The page asks the same socket the API offers (/v1/ws). It needs the server in open mode, because a
+// browser cannot send an API key on a WebSocket; with keys set, this quietly stays off.
+const live = { ws: null, symbol: null, stopped: true, disabled: false, delay: 1000, timer: null, last: null };
+
+function stopLive() {
+    live.stopped = true;
+    clearTimeout(live.timer);
+    if (live.ws) { try { live.ws.close(); } catch { /* already closed */ } }
+    live.ws = null;
+}
+
+function startLive(symbol) {
+    stopLive();
+    if (live.disabled || !('WebSocket' in window)) return;
+    live.symbol = symbol; live.stopped = false; live.last = null;
+    openLive();
+}
+
+function openLive() {
+    if (live.stopped) return;
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/v1/ws`);
+    live.ws = ws;
+    ws.onmessage = ev => {
+        let f; try { f = JSON.parse(ev.data); } catch { return; }
+        if (f.type === 'hello') {
+            if (f.auth !== 'open') { live.disabled = true; stopLive(); return; }
+            live.delay = 1000;
+            ws.send(JSON.stringify({ op: 'subscribe', params: { channel: 'quotes', symbols: [live.symbol] } }));
+        } else if (f.type === 'quote' && f.data.symbol === live.symbol && f.data.status === 'ok') {
+            applyLiveQuote(f.data);
+        } else if (f.type === 'error' && f.code === 'unauthorized') { live.disabled = true; stopLive(); }
+    };
+    ws.onclose = () => {
+        if (live.stopped || live.ws !== ws) return;
+        live.timer = setTimeout(openLive, live.delay);
+        live.delay = Math.min(live.delay * 2, 30000);
+    };
+    ws.onerror = () => {};
+}
+
+function applyLiveQuote(q) {
+    if (!isNum(q.price) || !$('shPrice')) return;
+    const ccy = q.currency && q.currency.length === 3 ? q.currency : priceCcy();
+    const el = $('shPrice');
+    el.textContent = price(q.price, priceCcy(), true);
+    if (live.last !== null && q.price !== live.last) {
+        el.classList.remove('tick-up', 'tick-down');
+        void el.offsetWidth;            // restart the animation
+        el.classList.add(q.price > live.last ? 'tick-up' : 'tick-down');
+    }
+    live.last = q.price;
+    if (isNum(q.change_percent)) $('shBadge').innerHTML = badge(q.change_percent);
+    if (isNum(q.change)) $('shChange').textContent = `${q.change > 0 ? '+' : ''}${price(q.change, priceCcy())} today`;
+    $('shFresh').innerHTML = freshnessTag(q) + (q.realtime ? ' <span class="live-dot" title="Updating live"></span>' : '');
+    void ccy;
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { if (live.symbol) stopLive(); }
+    else if (live.symbol && $('symbolResults') && !$('symbolResults').hidden) startLive(live.symbol);
+});
 
 // ── Overview: grouped and price-action first ───────────────────────
 const OVERVIEW_GROUPS = [

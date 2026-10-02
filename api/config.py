@@ -54,6 +54,8 @@ class Settings:
     log_level: str = "INFO"
     # Breaks ties when a name matches listings in several countries (for example TCS). "" = no preference.
     default_country: str = "IN"
+    # Extra modules to load at startup. Each registers its own operations and channels (docs/EXTENDING.md).
+    plugins: List[str] = field(default_factory=list)
 
     @property
     def auth_enabled(self) -> bool:
@@ -75,4 +77,5 @@ def load_settings() -> Settings:
         trust_proxy_headers=_bool("TRUST_PROXY_HEADERS", False),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         default_country=os.getenv("DEFAULT_COUNTRY", "IN").strip().upper(),
+        plugins=_list("PLUGINS"),
     )

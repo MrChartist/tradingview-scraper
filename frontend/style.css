@@ -350,3 +350,11 @@ th[title] { text-decoration: none; }
     .mode-btn { white-space: normal; line-height: 1.25; padding: 9px 4px; flex: 1 1 0; text-align: center; }
     .tagline { font-size: .8rem; }
 }
+
+/* Live price ticks */
+.sh-price.tick-up { animation: tickUp .9s ease-out; }
+.sh-price.tick-down { animation: tickDown .9s ease-out; }
+@keyframes tickUp { 0% { color: var(--pos); text-shadow: 0 0 14px var(--pos); } 100% { color: inherit; text-shadow: none; } }
+@keyframes tickDown { 0% { color: var(--neg); text-shadow: 0 0 14px var(--neg); } 100% { color: inherit; text-shadow: none; } }
+.live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--pos); margin-left: 4px; vertical-align: middle; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }

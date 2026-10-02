@@ -37,7 +37,7 @@ Every single module—Symbol Lookup, Market Movers, and Screener—supports one-
 
 ## 🔌 Production API and SDKs
 
-Besides the web UI, the server exposes a versioned, documented API under `/v1` so other products can use the data: batch quotes, candles, fundamentals, technicals, news, movers, a screener with your own conditions, an earnings/dividend calendar, and **live quotes over WebSocket and server-sent events**. It adds API-key auth, per-key rate limits, a uniform error format, caching, and freshness flags (`realtime` / `delayed`) on every price.
+Besides the web UI, the server exposes a versioned, documented API so other products can use the data. **The WebSocket (`/v1/ws`) is the main interface**: one connection to ask for anything (quotes, candles, fundamentals, news, movers, screener, calendar) and to receive live quotes and lists. The same operations are also on REST under `/v1`. They cover batch quotes, candles, fundamentals, technicals, news, movers, a screener with your own conditions, an earnings/dividend calendar, and **live quotes over WebSocket and server-sent events**. It adds API-key auth, per-key rate limits, a uniform error format, caching, and freshness flags (`realtime` / `delayed`) on every price.
 
 ```bash
 cp .env.example .env            # set API_KEYS
@@ -45,6 +45,7 @@ docker compose up -d --build    # or: uvicorn api.main:app --port 8000
 curl -H "X-API-Key: $KEY" "http://localhost:8000/v1/quotes?symbols=NSE:RELIANCE,BINANCE:BTCUSDT"
 ```
 
+* **WebSocket protocol:** [docs/WEBSOCKET.md](docs/WEBSOCKET.md). **Adding your own operations or live feeds:** [docs/EXTENDING.md](docs/EXTENDING.md).
 * **New to markets?** Read [docs/START_HERE.md](docs/START_HERE.md): five ideas in plain words, copy-paste code and a troubleshooting table.
 * Interactive docs at `/docs`; reference in [docs/API.md](docs/API.md); integration and upgrade path in [docs/INTEGRATION.md](docs/INTEGRATION.md).
 * SDKs: [Python](clients/python/README.md) and [JavaScript/TypeScript](clients/js/README.md), both with retries, typed errors and auto-reconnecting live streams.

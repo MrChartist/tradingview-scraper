@@ -134,11 +134,13 @@ def test_websocket_requires_key():
 
 def test_websocket_subscribe_flow_rejects_bad_symbols():
     with make() as c, c.websocket_connect("/v1/ws", headers=H) as ws, \
-            mock.patch.object(QuoteHub, "_ensure_running"):
-        ws.send_json({"action": "subscribe", "symbols": ["nse:tcs", "bad symbol"]})
+            mock.patch.object(QuoteHub, "_ensure_running"), \
+            mock.patch.object(svc, "resolve_symbol", return_value={"query": "x", "best": None, "alternatives": []}):
+        assert ws.receive_json()["type"] == "hello"
+        ws.send_json({"action": "subscribe", "symbols": ["nse:tcs", "bad symbol"]})     # older frame style still works
         msg = ws.receive_json()
         assert msg["type"] == "subscribed" and msg["symbols"] == ["NSE:TCS"]
-        assert msg["rejected"] == [{"symbol": "BAD SYMBOL", "reason": "invalid_format"}]
+        assert msg["rejected"] == [{"symbol": "BAD SYMBOL", "reason": "not_found"}]
         ws.send_json({"action": "ping"})
         assert ws.receive_json()["type"] == "pong"
 

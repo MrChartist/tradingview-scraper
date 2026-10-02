@@ -19,4 +19,17 @@ async def main():
 asyncio.run(main())
 ```
 
+## One connection for everything
+
+```python
+async with client.socket() as sock:
+    print(await sock.call("quotes", symbols=["reliance", "bitcoin"]))   # ask (plain names work)
+    await sock.subscribe("quotes", symbols=["bitcoin", "NSE:TCS"])     # live prices
+    await sock.subscribe("movers", market="stocks-india", category="gainers")
+    async for event in sock.events():          # quote, update, connected, disconnected
+        print(event["type"], event.get("data"))
+```
+
+It reconnects by itself and subscribes again. See `docs/WEBSOCKET.md`.
+
 Retries 429/502/503/504 and network errors with backoff; raises `AuthError`, `RateLimitError`, `NotFoundError`, `UpstreamError`, `ConnectionFailed`. Full reference: `docs/API.md`.

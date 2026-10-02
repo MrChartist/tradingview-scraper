@@ -191,6 +191,17 @@ class TickvaleClient:
         from .live import LiveSession
         return LiveSession(self.base_url, self.api_key, symbols)
 
+    def socket(self, **options):
+        """The WebSocket: one connection to ask for anything and receive live data.
+
+            async with client.socket() as sock:
+                await sock.call("quotes", symbols=["reliance"])
+                await sock.subscribe("quotes", symbols=["bitcoin"])
+                async for event in sock.events(): ...
+        """
+        from .ws import Socket
+        return Socket(self.base_url, self.api_key, **options)
+
     def stream(self, symbols: Symbols):
         """Async iterator of quote dicts that reconnects automatically:  async for q in client.stream([...])"""
         return self.live(symbols).quotes()
