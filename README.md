@@ -35,6 +35,22 @@ Every single module—Symbol Lookup, Market Movers, and Screener—supports one-
 
 ---
 
+## 🔌 Production API and SDKs
+
+Besides the web UI, the server exposes a versioned, documented API under `/v1` so other products can use the data: batch quotes, candles, fundamentals, technicals, news, movers, a screener with your own conditions, an earnings/dividend calendar, and **live quotes over WebSocket and server-sent events**. It adds API-key auth, per-key rate limits, a uniform error format, caching, and freshness flags (`realtime` / `delayed`) on every price.
+
+```bash
+cp .env.example .env            # set API_KEYS
+docker compose up -d --build    # or: uvicorn api.main:app --port 8000
+curl -H "X-API-Key: $KEY" "http://localhost:8000/v1/quotes?symbols=NSE:RELIANCE,BINANCE:BTCUSDT"
+```
+
+* Interactive docs at `/docs`; reference in [docs/API.md](docs/API.md); integration and upgrade path in [docs/INTEGRATION.md](docs/INTEGRATION.md).
+* SDKs: [Python](clients/python/README.md) and [JavaScript/TypeScript](clients/js/README.md), both with retries, typed errors and auto-reconnecting live streams.
+* **Read the terms-of-use and licensing caution in [docs/INTEGRATION.md](docs/INTEGRATION.md#5-read-this-before-going-to-production) before using this in a commercial product.**
+
+---
+
 ## 🚀 Quick Start Guide
 
 ### Prerequisites
@@ -58,7 +74,7 @@ pip install -r requirements.txt
 pip install -r api/requirements.txt
 
 # Optional, only to run the tests
-pip install pytest httpx
+pip install -r api/requirements-dev.txt
 ```
 
 ### 2. Running the Server
@@ -136,4 +152,4 @@ When you use the scraper classes directly with `export_result=True`, JSON/CSV ou
 ---
 
 ## Credits and disclaimer
-The scraping library is based on [mnwato/tradingview-scraper](https://github.com/mnwato/tradingview-scraper). This is an unofficial project, not affiliated with or endorsed by TradingView. Data comes from public endpoints, may be delayed or incomplete, and is not investment advice.
+The scraping library is based on [tradingview-scraper](https://github.com/mnwato/tradingview-scraper) by **Mostafa Najmi**. Please keep this credit and the upstream licence terms when you redistribute. This is an unofficial project, not affiliated with or endorsed by TradingView. Data comes from public endpoints, may be delayed or incomplete, and is not investment advice.

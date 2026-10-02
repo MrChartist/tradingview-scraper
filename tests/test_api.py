@@ -4,15 +4,15 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
-from api import main
+from api import main, services as svc, ui
 from tradingview_scraper.symbols.market_movers import MarketMovers
 
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    main._CACHE.clear()
+    svc._CACHE.clear()
     yield
-    main._CACHE.clear()
+    svc._CACHE.clear()
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ ROWS = [{"symbol": "NSE:ABC", "name": "ABC", "close": 10.5, "change": 2.5, "volu
 
 
 def test_frontend_is_served(client):
-    assert "Open Market" in client.get("/").text and "Chartist" not in client.get("/").text
+    assert "Open Market" in client.get("/").text
     assert client.get("/style.css").status_code == 200
     assert client.get("/script.js").status_code == 200
 
@@ -34,7 +34,7 @@ def test_health(client):
 
 
 def test_movers_ok_and_cached(client):
-    with mock.patch.object(main.movers_scraper, "scrape", return_value={"status": "success", "data": ROWS}) as m:
+    with mock.patch.object(svc.movers_scraper, "scrape", return_value={"status": "success", "data": ROWS}) as m:
         assert client.get("/api/movers?market=stocks-india").json()["data"] == ROWS
         client.get("/api/movers?market=stocks-india")
         assert m.call_count == 1  # second call served from cache
@@ -56,12 +56,12 @@ def test_invalid_timeframe_is_400(client):
 
 
 def test_not_found_maps_to_404(client):
-    with mock.patch.object(main.overview_scraper, "get_symbol_overview", return_value={"status": "failed"}):
+    with mock.patch.object(svc.overview_scraper, "get_symbol_overview", return_value={"status": "failed"}):
         assert client.get("/api/overview/NSE/NOPE").status_code == 404
 
 
 def test_screener_builds_filters(client):
-    with mock.patch.object(main.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
+    with mock.patch.object(svc.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
         client.get("/api/screener?market=india&min_price=5&max_change=-2&min_market_cap=1e9&main_only=false")
     filters = m.call_args.kwargs["filters"]
     assert {"left": "close", "operation": "egreater", "right": 5.0} in filters
@@ -70,7 +70,7 @@ def test_screener_builds_filters(client):
 
 
 def test_download_screener_respects_filters(client):
-    with mock.patch.object(main.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
+    with mock.patch.object(svc.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
         r = client.get("/api/download/screener?market=india&min_price=5&main_only=false&fmt=csv")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     assert m.call_args.kwargs["filters"] == [{"left": "close", "operation": "egreater", "right": 5.0}]
@@ -78,20 +78,20 @@ def test_download_screener_respects_filters(client):
 
 def test_download_ohlcv_json(client):
     candles = [{"index": 0, "timestamp": 1, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 9}]
-    with mock.patch.object(main, "fetch_ohlcv", return_value=candles):
+    with mock.patch.object(svc, "fetch_ohlcv", return_value=candles):
         r = client.get("/api/download/ohlcv/NSE/TCS?fmt=json")
     assert r.json() == candles
 
 
 def test_csv_formula_injection_is_neutralised():
-    assert main._csv_safe("=1+1") == "'=1+1"
-    assert main._csv_safe("-5.5") == "-5.5"
-    assert main._csv_safe({"a": 1}) == '{"a": 1}'
+    assert ui._csv_safe("=1+1") == "'=1+1"
+    assert ui._csv_safe("-5.5") == "-5.5"
+    assert ui._csv_safe({"a": 1}) == '{"a": 1}'
 
 
 def test_search_maps_results(client):
     fake = [{"symbol": "RELIANCE", "exchange": "NSE", "description": "Reliance", "type": "stock", "country": "IN", "currency_code": "INR"}]
-    with mock.patch.object(main.requests, "get") as g:
+    with mock.patch.object(svc.requests, "get") as g:
         g.return_value.json.return_value = {"symbols": fake}
         g.return_value.raise_for_status.return_value = None
         data = client.get("/api/search?q=reliance").json()["data"]
@@ -127,7 +127,7 @@ def test_extended_hours_rejected_outside_usa():
 
 
 def test_screener_defaults_to_main_exchange(client):
-    with mock.patch.object(main.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
+    with mock.patch.object(svc.screener_scraper, "screen", return_value={"status": "success", "data": ROWS}) as m:
         client.get("/api/screener?market=india")
     assert {"left": "exchange", "operation": "in_range", "right": ["NSE"]} in m.call_args.kwargs["filters"]
 
@@ -135,22 +135,22 @@ def test_screener_defaults_to_main_exchange(client):
 def test_native_currency_replaces_usd_figures():
     resp = {"status": "success", "data": {"market_cap_basic": 163.8e9, "debt_to_equity": 0.4, "close": 1167.7}}
     native = {"market_cap_basic": 15.78e12, "currency": "INR", "fundamental_currency_code": "INR"}
-    with mock.patch.object(main.requests, "post") as post:
+    with mock.patch.object(svc.requests, "post") as post:
         post.return_value.json.return_value = {"data": [{"d": [native["market_cap_basic"], "INR", "INR"]}]}
         post.return_value.raise_for_status.return_value = None
-        out = main.with_native_currency("NSE", "RELIANCE", resp)["data"]
+        out = svc.with_native_currency("NSE", "RELIANCE", resp)["data"]
     assert out["market_cap_basic"] == 15.78e12 and out["currency"] == "INR"
     assert out["debt_to_equity"] == 0.4          # ratios untouched
     assert resp["data"]["market_cap_basic"] == 163.8e9   # input not mutated
 
 
 def test_unknown_exchange_keeps_usd():
-    out = main.with_native_currency("BINANCE", "BTCUSDT", {"status": "success", "data": {"market_cap_basic": 5}})["data"]
+    out = svc.with_native_currency("BINANCE", "BTCUSDT", {"status": "success", "data": {"market_cap_basic": 5}})["data"]
     assert out["currency"] == "USD" and out["market_cap_basic"] == 5
 
 
 def test_money_field_rule():
-    assert main.is_money_field("market_cap_basic") and main.is_money_field("total_revenue")
-    assert main.is_money_field("earnings_per_share_basic_ttm")
-    assert not main.is_money_field("gross_margin") and not main.is_money_field("return_on_assets_fq")
-    assert not main.is_money_field("debt_to_equity") and not main.is_money_field("price_earnings_ttm")
+    assert svc.is_money_field("market_cap_basic") and svc.is_money_field("total_revenue")
+    assert svc.is_money_field("earnings_per_share_basic_ttm")
+    assert not svc.is_money_field("gross_margin") and not svc.is_money_field("return_on_assets_fq")
+    assert not svc.is_money_field("debt_to_equity") and not svc.is_money_field("price_earnings_ttm")

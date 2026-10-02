@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-market-client"
+version = "1.0.0"
+description = "Python client for the Open Market Terminal API: quotes, candles, fundamentals, screener and live streams."
+requires-python = ">=3.9"
+dependencies = ["requests>=2.28"]
+
+[project.optional-dependencies]
+live = ["websockets>=13.1"]
+pandas = ["pandas>=2.0"]
+
+[tool.setuptools]
+packages = ["open_market_client"]

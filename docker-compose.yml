@@ -1,0 +1,8 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env          # copy .env.example to .env and set API_KEYS
+    restart: unless-stopped
