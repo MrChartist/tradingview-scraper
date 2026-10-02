@@ -1,8 +1,6 @@
 # TradingView Intelligence Terminal
 
-![Terminal Preview](https://via.placeholder.com/1200x600/0a0e1a/38bdf8?text=TradingView+Intelligence+Terminal) *(Add actual screenshot here)*
-
-An enterprise-grade, real-time market data intelligence terminal. Built with a high-performance **FastAPI** backend and a sleek, fully responsive **Glassmorphic** frontend, this project operates as a powerful wrapper around the `tradingview-scraper` library.
+An enterprise-grade, real-time market data intelligence terminal. Built with a high-performance **FastAPI** backend and a clean, responsive frontend with **dark and light themes**, this project operates as a powerful wrapper around the `tradingview-scraper` library.
 
 **Repository:** [MrChartist/tradingview-scraper](https://github.com/MrChartist/tradingview-scraper)
 
@@ -11,24 +9,28 @@ An enterprise-grade, real-time market data intelligence terminal. Built with a h
 ## ✨ Key Features
 
 ### 1. Advanced Symbol Lookup 🔍
-Instantly fetch comprehensive data for any ticker (Stocks, Crypto, Forex).
+Type a company name or ticker (for example `Reliance` or `AAPL`) and pick from the suggestions. No need to remember the exchange prefix.
 * **Overview:** General symbol information, current price, and basic performance metrics.
-* **Indicators:** Wide array of technical indicators (RSI, MACD, Moving Averages, etc.).
+* **Price & Candles:** Interactive candlestick chart with volume, plus a sortable candle table.
+* **Indicators:** Wide array of technical indicator values, kept in their own tab.
 * **Fundamentals:** Deep-dive into financial data and fundamental graphs.
 * **Real-Time OHLCV Pricing:** Streams historical and real-time candle data directly via TradingView WebSockets. Adjustable timeframes (1m to 1M) and candle limits.
 
 ### 2. Market Movers Dashboard 📈
 Track the heartbeat of global markets across multiple asset classes and regions (USA, India, UK, Crypto, Forex).
-* **Categories tracked:** Gainers, Losers, Most Active, Penny Stocks, Pre-Market Gainers/Losers, After-Hours Gainers/Losers.
+* **Categories tracked:** Gainers, Losers, Most Active, Penny Stocks. Pre-Market and After-Hours Gainers/Losers are available for USA.
+* **Clean lists:** Only liquid listings on the main exchange (for example NSE for India) are shown, so OTC and thinly traded names do not flood the results.
+* Click any row to open that symbol in Symbol Lookup.
 * Instantly view the biggest movers with percentage changes color-coded for quick visual parsing.
 
 ### 3. Dynamic Market Screener 🎯
 Filter thousands of assets using custom parameters.
-* **Available Filters:** Minimum/Maximum Price, Minimum Volume, Minimum Market Cap.
+* **Available Filters:** Min/Max Price, Min/Max Change %, Minimum Volume, Minimum Market Cap (USD), with sort field and order.
+* **Presets:** Active gainers, active losers, volume leaders, large caps and more in one click.
 * **Global Support:** Screen markets in USA, India, UK, Canada, Germany, Crypto, and Global Forex.
 
 ### 4. Universal Data Export 💾
-Every single module—Symbol Lookup, Market Movers, and Screener—supports one-click secure downloads in **CSV** or **JSON** formats for integration into your own data pipelines, backtesting engines, or spreadsheets.
+Every single module—Symbol Lookup, Market Movers, and Screener—supports one-click downloads in **CSV** or **JSON** formats (your current filters and timeframe are respected) for integration into your own data pipelines, backtesting engines, or spreadsheets.
 
 ---
 
@@ -53,6 +55,9 @@ source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
 # Install main requirements and API requirements
 pip install -r requirements.txt
 pip install -r api/requirements.txt
+
+# Optional, only to run the tests
+pip install pytest httpx
 ```
 
 ### 2. Running the Server
@@ -68,7 +73,9 @@ uvicorn api.main:app --reload --port 8000
 Once the server is running, simply open your browser and navigate to:
 **http://localhost:8000/**
 
-*The frontend files are served directly by the FastAPI backend.*
+*The frontend files are served directly by the FastAPI backend, so you can start the server from any directory.*
+
+**Tips:** press `/` to focus the symbol box, `1` `2` `3` to switch sections, and use the moon/sun button to change theme (your choice is remembered).
 
 ---
 
@@ -77,12 +84,15 @@ Once the server is running, simply open your browser and navigate to:
 The FastAPI backend provides robust REST endpoints that power the frontend. You can access the interactive Swagger documentation at `http://localhost:8000/docs`.
 
 ### Selected Endpoints:
+* `GET /api/search?q=reliance` (symbol autocomplete)
 * `GET /api/overview/{exchange}/{ticker}`
 * `GET /api/indicators/{exchange}/{ticker}`
 * `GET /api/fundamentals/{exchange}/{ticker}`
 * `GET /api/ohlcv/{exchange}/{ticker}?timeframe=1d&candles=100`
 * `GET /api/movers?market=stocks-usa&category=gainers&limit=25`
-* `GET /api/screener?market=america&min_price=10&min_volume=1000000`
+* `GET /api/screener?market=india&min_price=100&min_volume=1000000&sort_by=change`
+
+Responses are cached for 60 seconds. Invalid input returns a clear `400`/`422` message instead of a server error.
 
 ---
 
@@ -97,7 +107,7 @@ pytest tests/
 ```
 
 ### Sample Data & Exports
-When streaming OHLCV data or running independent scraper scripts, JSON outputs are frequently saved into the `/export/` and `/tradingview_scraper/data/` directories. 
+When you use the scraper classes directly with `export_result=True`, JSON/CSV outputs are saved into the `/export/` directory. The web API does not write export files; use the download buttons instead.
 
 **Example OHLCV Output Structure (`export/ohlc_...json`):**
 ```json
@@ -119,7 +129,7 @@ When streaming OHLCV data or running independent scraper scripts, JSON outputs a
 ## 🛠 Tech Stack
 * **Core:** Python, TradingView WebSocket protocol
 * **Backend:** FastAPI, Uvicorn, Pydantic
-* **Frontend:** Vanilla HTML/CSS/JS (Zero-dependency, high-performance Glassmorphism UI)
+* **Frontend:** Vanilla HTML/CSS/JS (no build step, no dependencies)
 * **Data Processing:** Pandas, BeautifulSoup4
 
 ---
